@@ -110,9 +110,17 @@ input[type=range]{accent-color:var(--accent);}
   <span class="sep"></span>
   <button id="btnNew">新規</button>
   <button id="btnOpen">開く</button>
+  <button id="btnImport">インポート</button>
   <button id="btnSave">保存 (.json)</button>
-  <button id="btnSVG" class="primary">SVG書き出し</button>
-  <button id="btnPNG">PNG書き出し</button>
+  <div id="exportWrap" style="position:relative; display:inline-block;">
+    <button id="btnExport" class="primary">書き出し ▾</button>
+    <div id="exportMenu" style="display:none; flex-direction:column; gap:2px; position:absolute; top:calc(100% + 2px); left:0; background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:4px; z-index:30; min-width:130px;">
+      <button data-fmt="svg" style="text-align:left; width:100%;">SVG (.svg)</button>
+      <button data-fmt="png" style="text-align:left; width:100%;">PNG (.png)</button>
+      <button data-fmt="jpeg" style="text-align:left; width:100%;">JPEG (.jpg)</button>
+      <button data-fmt="pdf" style="text-align:left; width:100%;">PDF (.pdf)</button>
+    </div>
+  </div>
   <span class="sep"></span>
   <button id="btnUndo" title="元に戻す (Ctrl+Z)">↩ 戻す</button>
   <button id="btnRedo" title="やり直す (Ctrl+Y)">↪ 進む</button>
@@ -136,6 +144,7 @@ input[type=range]{accent-color:var(--accent);}
           <path id="gridpath" d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(0,0,0,.12)" stroke-width="1"/>
         </pattern>
       </defs>
+      <defs id="gradDefs"></defs>
       <g id="world">
         <rect id="artboard" x="0" y="0" fill="#ffffff" style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.45))"/>
         <rect id="gridRect" x="0" y="0" fill="url(#gridpat)" style="display:none" pointer-events="none"/>
@@ -159,6 +168,7 @@ input[type=range]{accent-color:var(--accent);}
 
 <footer id="status"><span id="coords">x: 0, y: 0</span><span id="hint"></span></footer>
 <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
+<input type="file" id="importInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/gif,image/webp,image/bmp" style="display:none">
 
 <script>
 "use strict";
@@ -205,7 +215,7 @@ function toScreen(p){
 }
 
 /* ================= 図形定義 ================= */
-const typeNames = {rect:'長方形', ellipse:'楕円', line:'直線', poly:'多角形', star:'星形', path:'パス', text:'テキスト'};
+const typeNames = {rect:'長方形', ellipse:'楕円', line:'直線', poly:'多角形', star:'星形', path:'パス', text:'テキスト', image:'画像'};
 
 function newShape(type, extra){
   const s = Object.assign({
@@ -251,10 +261,37 @@ function pathD(s){
   return d;
 }
 
+/* ================= グラデーション ================= */
+function gradientId(s){ return 'grad'+s.id; }
+function gradientDefString(s){
+  const g = s.fill, gid = gradientId(s);
+  const stops = (g.stops||[]).map(st=>`<stop offset="${fmt(clamp(st.offset,0,1)*100)}%" stop-color="${esc(st.color)}"/>`).join('');
+  if(g.type==='radial'){
+    return `<radialGradient id="${gid}" cx="50%" cy="50%" r="70%">${stops}</radialGradient>`;
+  }
+  const ang = deg2rad(g.angle||0);
+  const x1 = 50 - 50*Math.cos(ang), y1 = 50 - 50*Math.sin(ang);
+  const x2 = 50 + 50*Math.cos(ang), y2 = 50 + 50*Math.sin(ang);
+  return `<linearGradient id="${gid}" x1="${fmt(x1)}%" y1="${fmt(y1)}%" x2="${fmt(x2)}%" y2="${fmt(y2)}%">${stops}</linearGradient>`;
+}
+function updateGradientDefs(){
+  const defs = $('gradDefs');
+  const list = state.shapes.filter(s=> s.fill && typeof s.fill==='object').map(gradientDefString);
+  defs.innerHTML = list.join('');
+}
+
 function shapeEl(s, live){
   const NS = 'http://www.w3.org/2000/svg';
   let el;
   switch(s.type){
+    case 'image':
+      el = document.createElementNS(NS,'image');
+      el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
+      el.setAttribute('width',fmt(Math.max(0,s.w))); el.setAttribute('height',fmt(Math.max(0,s.h)));
+      el.setAttribute('preserveAspectRatio','none');
+      el.setAttribute('href', s.src);
+      el.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href', s.src);
+      break;
     case 'rect':
       el = document.createElementNS(NS,'rect');
       el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
@@ -298,10 +335,10 @@ function shapeEl(s, live){
   }
   if(s.type==='line' || (s.type==='path' && !s.closed && s.fill==='none')){
     el.setAttribute('fill','none');
-  }else if(s.type!=='line'){
-    el.setAttribute('fill', s.fill);
+  }else if(s.type!=='line' && s.type!=='image'){
+    el.setAttribute('fill', typeof s.fill==='object' ? `url(#${gradientId(s)})` : s.fill);
   }
-  if(s.stroke!=='none' && s.strokeWidth>0){
+  if(s.stroke!=='none' && s.strokeWidth>0 && s.type!=='image'){
     el.setAttribute('stroke', s.stroke);
     el.setAttribute('stroke-width', s.strokeWidth);
     el.setAttribute('stroke-linecap','round');
@@ -324,6 +361,7 @@ function shapeEl(s, live){
 function geomBBox(s){
   switch(s.type){
     case 'rect': return {x:s.x, y:s.y, w:s.w, h:s.h};
+    case 'image': return {x:s.x, y:s.y, w:s.w, h:s.h};
     case 'ellipse': return {x:s.cx-s.rx, y:s.cy-s.ry, w:s.rx*2, h:s.ry*2};
     case 'line':{
       const x=Math.min(s.x1,s.x2), y=Math.min(s.y1,s.y2);
@@ -412,6 +450,7 @@ function render(){
   $('gridpat').setAttribute('height',state.gridSize);
   $('gridpath').setAttribute('d',`M ${state.gridSize} 0 L 0 0 0 ${state.gridSize}`);
 
+  updateGradientDefs();
   shapesLayer.innerHTML = '';
   state.shapes.forEach(s=>{ if(s.visible) shapesLayer.appendChild(shapeEl(s,true)); });
 
@@ -532,7 +571,7 @@ function setTool(t){
   if(pen) finishPen(false);
   state.tool = t;
   document.querySelectorAll('.tbtn').forEach(b=>b.classList.toggle('active', b.dataset.tool===t));
-  stage.className = 'tool-'+t;
+  stage.setAttribute('class', 'tool-'+t);
   $('hint').textContent = HINTS[t] || '';
 }
 
@@ -815,6 +854,7 @@ function translateShape(s, o, dx, dy){
     case 'poly': s.cx=o.cx+dx; s.cy=o.cy+dy; break;
     case 'path': s.pts=o.pts.map(p=>({x:p.x+dx, y:p.y+dy})); break;
     case 'text': s.x=o.x+dx; s.y=o.y+dy; break;
+    case 'image': s.x=o.x+dx; s.y=o.y+dy; break;
   }
 }
 function bboxTransform(s, o, ob, nb){
@@ -828,6 +868,7 @@ function bboxTransform(s, o, ob, nb){
     case 'poly': s.cx=mx(o.cx); s.cy=my(o.cy); s.r=o.r*(sx+sy)/2; break;
     case 'path': s.pts=o.pts.map(p=>({x:mx(p.x), y:my(p.y)})); break;
     case 'text': s.x=mx(o.x); s.y=my(o.y); s.size=Math.max(4, o.size*sy); break;
+    case 'image': s.x=mx(o.x); s.y=my(o.y); s.w=o.w*sx; s.h=o.h*sy; break;
   }
 }
 
@@ -878,6 +919,55 @@ function colorIn(id,label,val){
     <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
     <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`);
 }
+function fillTypeOf(v){ return (v && typeof v==='object') ? v.type : 'solid'; }
+function fillPanel(one){
+  const v = one.fill;
+  const type = fillTypeOf(v);
+  let html = `<div class="prow"><label>塗り</label><select id="pFillType">
+      <option value="solid" ${type==='solid'?'selected':''}>単色</option>
+      <option value="linear" ${type==='linear'?'selected':''}>線形グラデーション</option>
+      <option value="radial" ${type==='radial'?'selected':''}>放射グラデーション</option>
+    </select></div>`;
+  if(type==='solid'){
+    html += colorIn('pFill','　', v);
+  }else{
+    const stops = v.stops || [{offset:0,color:'#d8d1c2'},{offset:1,color:'#33312e'}];
+    html += propRow(`<label>色1</label><input type="color" id="pGrad0" value="${stops[0].color}">
+      <label>色2</label><input type="color" id="pGrad1" value="${stops[1].color}">`);
+    if(type==='linear'){
+      html += propRow(`<label>角度</label><input type="range" id="pGradAngle" min="0" max="360" value="${v.angle||0}" style="flex:1"><span id="pGradAngleVal">${v.angle||0}°</span>`);
+    }
+  }
+  return html;
+}
+function bindFillPanel(one){
+  const pft = $('pFillType');
+  pft.onchange = ()=>{
+    pushHistory();
+    const t = pft.value;
+    if(t==='solid'){
+      const cur = one.fill;
+      one.fill = (cur && cur.stops && cur.stops[0]) ? cur.stops[0].color : (typeof cur==='string' ? cur : '#d8d1c2');
+    }else{
+      const cur = one.fill;
+      const baseStops = (cur && cur.stops) ? cur.stops.map(s=>({...s})) :
+        [{offset:0, color:(typeof cur==='string' && cur!=='none') ? cur : '#d8d1c2'}, {offset:1, color:'#33312e'}];
+      one.fill = {type:t, stops:baseStops, angle:(cur && cur.angle) || 0};
+    }
+    render();
+  };
+  if(fillTypeOf(one.fill)==='solid'){
+    bindColor('pFill','fill');
+  }else{
+    const pg0 = $('pGrad0'), pg1 = $('pGrad1'), pga = $('pGradAngle');
+    pg0.oninput = ()=>{ pushHistory(); one.fill.stops[0].color = pg0.value; render(); };
+    pg1.oninput = ()=>{ pushHistory(); one.fill.stops[1].color = pg1.value; render(); };
+    if(pga){
+      pga.oninput = ()=>{ one.fill.angle = +pga.value; $('pGradAngleVal').textContent = pga.value+'°'; updateGradientDefs(); };
+      pga.onchange = ()=>{ pushHistory(); render(); };
+    }
+  }
+}
 
 function renderProps(){
   const el = $('props');
@@ -907,9 +997,14 @@ function renderProps(){
   if(one) html += numIn('pRot','回転',one.rotation||0);
   html += propRow(`<label>不透明</label><input type="range" id="pOp" min="0" max="1" step="0.05" value="${one?one.opacity:1}" style="flex:1">`);
   const isLine = one && one.type==='line';
-  if(!isLine) html += colorIn('pFill','塗り', one ? one.fill : styleNow.fill);
-  html += colorIn('pStroke','線', one ? one.stroke : styleNow.stroke);
-  html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
+  const isImage = one && one.type==='image';
+  if(!isLine && !isImage){
+    html += one ? fillPanel(one) : colorIn('pFill','塗り', styleNow.fill);
+  }
+  if(!isImage){
+    html += colorIn('pStroke','線', one ? one.stroke : styleNow.stroke);
+    html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
+  }
 
   if(one){
     if(one.type==='rect') html += `<div class="pgroup">` + numIn('pRx','角丸',one.rx||0) + `</div>`;
@@ -979,17 +1074,11 @@ function renderProps(){
     }); };
   op.onchange = ()=>{ pushHistory(); render(); };
 
-  const bindColor = (base, key)=>{
-    const c = $(base), n = $(base+'None');
-    if(!c) return;
-    c.oninput = ()=>{ pushHistory(); selShapes().forEach(s=>s[key]=c.value); styleNow[key]=c.value; render(); };
-    n.onchange = ()=>{ pushHistory();
-      const v = n.checked ? 'none' : c.value;
-      selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
-  };
-  bindColor('pFill','fill');
-  bindColor('pStroke','stroke');
-  bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
+  if(!isImage){
+    if(one) bindFillPanel(one); else bindColor('pFill','fill');
+    bindColor('pStroke','stroke');
+    bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
+  }
 
   el.querySelectorAll('[data-al]').forEach(btn=> btn.onclick = ()=> align(btn.dataset.al));
   el.querySelectorAll('[data-z]').forEach(btn=> btn.onclick = ()=> reorder(btn.dataset.z));
@@ -999,6 +1088,14 @@ function renderProps(){
 function bind(id, fn){
   const input = $(id); if(!input) return;
   input.onchange = ()=>{ fn(input.value); render(); };
+}
+function bindColor(base, key){
+  const c = $(base), n = $(base+'None');
+  if(!c) return;
+  c.oninput = ()=>{ pushHistory(); selShapes().forEach(s=>s[key]=c.value); styleNow[key]=c.value; render(); };
+  n.onchange = ()=>{ pushHistory();
+    const v = n.checked ? 'none' : c.value;
+    selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
 }
 
 /* ================= 整列・重ね順 ================= */
@@ -1067,7 +1164,7 @@ function duplicateSel(){ copySel(); paste(); }
 function syncStyleFromSel(){
   const s = selShapes()[0];
   if(!s) return;
-  if(s.type!=='line') styleNow.fill = s.fill;
+  if(s.type!=='line' && typeof s.fill==='string') styleNow.fill = s.fill;
   styleNow.stroke = s.stroke; styleNow.strokeWidth = s.strokeWidth; styleNow.opacity = s.opacity;
 }
 
@@ -1131,7 +1228,9 @@ function download(name, blob){
 }
 function buildSVGString(){
   const d = state.doc;
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.w}" height="${d.h}" viewBox="0 0 ${d.w} ${d.h}">`;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${d.w}" height="${d.h}" viewBox="0 0 ${d.w} ${d.h}">`;
+  const grads = state.shapes.filter(s=> s.fill && typeof s.fill==='object').map(gradientDefString);
+  if(grads.length) out += '<defs>'+grads.join('')+'</defs>';
   if(d.bg && d.bg!=='none') out += `<rect width="${d.w}" height="${d.h}" fill="${d.bg}"/>`;
   const ser = new XMLSerializer();
   state.shapes.forEach(s=>{ if(s.visible) out += ser.serializeToString(shapeEl(s,false)); });
@@ -1142,21 +1241,65 @@ function fnameBase(){ return ($('fname').value || 'design').trim(); }
 function exportSVG(){
   download(fnameBase()+'.svg', new Blob([buildSVGString()], {type:'image/svg+xml'}));
 }
-function exportPNG(){
+function rasterize(scale, forceOpaque, cb){
   const svg = buildSVGString();
   const url = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
   const img = new Image();
   img.onload = ()=>{
-    const scale = 2;
     const c = document.createElement('canvas');
     c.width = state.doc.w*scale; c.height = state.doc.h*scale;
     const ctx = c.getContext('2d');
+    if(forceOpaque){ ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,c.width,c.height); }
     ctx.scale(scale, scale);
     ctx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
-    c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png');
+    cb(c);
   };
+  img.onerror = ()=>{ URL.revokeObjectURL(url); alert('書き出しに失敗しました。'); };
   img.src = url;
+}
+function exportPNG(){
+  rasterize(2, false, c=> c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png'));
+}
+function exportJPEG(){
+  rasterize(2, true, c=> c.toBlob(b=> download(fnameBase()+'.jpg', b), 'image/jpeg', 0.92));
+}
+function exportPDF(){
+  rasterize(2, true, c=> c.toBlob(b=>{
+    b.arrayBuffer().then(buf=> buildPDF(new Uint8Array(buf), c.width, c.height));
+  }, 'image/jpeg', 0.92));
+}
+function buildPDF(jpegBytes, wPx, hPx){
+  const enc = new TextEncoder();
+  const parts = [];
+  let offset = 0;
+  const offsets = [0];
+  function addPart(data){
+    const bytes = typeof data==='string' ? enc.encode(data) : data;
+    parts.push(bytes);
+    offset += bytes.length;
+  }
+  function beginObj(num){ offsets[num]=offset; addPart(num+' 0 obj\n'); }
+
+  addPart('%PDF-1.4\n');
+  beginObj(1); addPart('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  beginObj(2); addPart('<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+  const wPt = fmt(wPx*72/96), hPt = fmt(hPx*72/96);
+  beginObj(3); addPart(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`);
+  beginObj(4);
+  addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
+  addPart(jpegBytes);
+  addPart('\nendstream\nendobj\n');
+  const content = `q ${wPt} 0 0 ${hPt} 0 0 cm /Im0 Do Q`;
+  beginObj(5); addPart(`<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+
+  const xrefStart = offset;
+  let xref = 'xref\n0 6\n0000000000 65535 f \n';
+  for(let i=1;i<=5;i++){ xref += String(offsets[i]).padStart(10,'0') + ' 00000 n \n'; }
+  addPart(xref);
+  addPart(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+
+  download(fnameBase()+'.pdf', new Blob(parts, {type:'application/pdf'}));
 }
 function saveJSON(){
   const data = {app:'vector-koubou', version:1, fname:$('fname').value,
@@ -1180,6 +1323,149 @@ function openJSON(file){
       alert('ファイルを読み込めませんでした。ベクターデザイン工房で保存した .json を指定してください。');
     }
   };
+  fr.readAsText(file);
+}
+
+/* ---- 各種ファイルのインポート ---- */
+function importFile(file){
+  const isSVG = file.type==='image/svg+xml' || /\.svg$/i.test(file.name);
+  if(isSVG) importSVG(file);
+  else importImage(file);
+}
+function importImage(file){
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    const src = fr.result;
+    const img = new Image();
+    img.onload = ()=>{
+      const maxW = state.doc.w*0.8, maxH = state.doc.h*0.8;
+      let w = img.naturalWidth || 200, h = img.naturalHeight || 200;
+      const k = Math.min(1, maxW/w, maxH/h);
+      w *= k; h *= k;
+      pushHistory();
+      const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src});
+      state.shapes.push(s);
+      state.sel = new Set([s.id]);
+      render();
+    };
+    img.onerror = ()=> alert('画像を読み込めませんでした。');
+    img.src = src;
+  };
+  fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
+  fr.readAsDataURL(file);
+}
+function sanitizeSVGNode(root){
+  root.querySelectorAll('script,foreignObject').forEach(n=>n.remove());
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node = walker.currentNode;
+  while(node){
+    if(node.attributes){
+      [...node.attributes].forEach(attr=>{
+        if(/^on/i.test(attr.name)) node.removeAttribute(attr.name);
+        if(/^(href|xlink:href)$/i.test(attr.name) && /^\s*javascript:/i.test(attr.value)) node.removeAttribute(attr.name);
+      });
+    }
+    node = walker.nextNode();
+  }
+}
+function importSVG(file){
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    let holder = null;
+    try{
+      const doc = new DOMParser().parseFromString(fr.result, 'image/svg+xml');
+      if(doc.querySelector('parsererror')) throw new Error('parse error');
+      const svgRoot = doc.documentElement;
+      if(svgRoot.nodeName.toLowerCase() !== 'svg') throw new Error('not svg');
+      sanitizeSVGNode(svgRoot); // appendChild前に無害化（挿入後だとscriptが即実行されるため）
+
+      holder = document.createElement('div');
+      holder.style.cssText = 'position:absolute; left:-99999px; top:-99999px; width:3000px; height:3000px; overflow:hidden;';
+      document.body.appendChild(holder);
+      const imported = document.importNode(svgRoot, true);
+      holder.appendChild(imported);
+
+      const skipTags = new Set(['defs','clippath','mask','symbol','pattern']);
+      const inSkipped = el=>{
+        let p = el.parentElement;
+        while(p && p!==imported){ if(skipTags.has(p.nodeName.toLowerCase())) return true; p = p.parentElement; }
+        return false;
+      };
+      const newShapes = [];
+      imported.querySelectorAll('rect,circle,ellipse,line,polyline,polygon,path').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const len = el.getTotalLength();
+          const ctm = el.getCTM();
+          if(!len || !isFinite(len) || !ctm) return;
+          const n = clamp(Math.round(len/6), 8, 200);
+          const pts = [];
+          for(let i=0;i<=n;i++){
+            const lp = el.getPointAtLength(len*i/n).matrixTransform(ctm);
+            pts.push({x:lp.x, y:lp.y});
+          }
+          const cs = getComputedStyle(el);
+          let fill = el.getAttribute('fill') || cs.fill || '#000000';
+          if(fill==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(fill)) fill = 'none';
+          let stroke = el.getAttribute('stroke') || cs.stroke || 'none';
+          if(stroke==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(stroke)) stroke = 'none';
+          const tag = el.nodeName.toLowerCase();
+          const dAttr = el.getAttribute('d') || '';
+          const closed = ['rect','circle','ellipse','polygon'].includes(tag) || /[Zz]\s*$/.test(dAttr.trim());
+          const sw = parseFloat(el.getAttribute('stroke-width') || cs.strokeWidth) || (stroke!=='none' ? 1 : 0);
+          const op = clamp(parseFloat(el.getAttribute('opacity') || cs.opacity || '1') || 1, 0, 1);
+          newShapes.push(newShape('path', {pts, closed, smooth:false, fill, stroke, strokeWidth:sw, opacity:op}));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+      imported.querySelectorAll('text').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const ctm = el.getCTM(); if(!ctm) return;
+          const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+          const pt = stage.createSVGPoint(); pt.x = x; pt.y = y;
+          const wp = pt.matrixTransform(ctm);
+          const scale = Math.hypot(ctm.a, ctm.b) || 1;
+          const cs = getComputedStyle(el);
+          const size = (parseFloat(el.getAttribute('font-size')) || parseFloat(cs.fontSize) || 16) * scale;
+          const weight = el.getAttribute('font-weight') || cs.fontWeight || '400';
+          newShapes.push(newShape('text', {
+            x:wp.x, y:wp.y, text: el.textContent || '', size,
+            font: /serif/i.test(cs.fontFamily) ? 'serif' : /mono/i.test(cs.fontFamily) ? 'monospace' : 'sans-serif',
+            bold: parseInt(weight,10) >= 600 || /bold/i.test(weight),
+            stroke:'none', fill: el.getAttribute('fill') || cs.fill || '#000000',
+          }));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+      imported.querySelectorAll('image').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const href = el.getAttribute('href') || el.getAttributeNS('http://www.w3.org/1999/xlink','href') || el.getAttribute('xlink:href');
+          if(!href) return;
+          const ctm = el.getCTM(); if(!ctm) return;
+          const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+          const w = parseFloat(el.getAttribute('width')) || 0, h = parseFloat(el.getAttribute('height')) || 0;
+          const corners = [[x,y],[x+w,y],[x+w,y+h],[x,y+h]].map(([px,py])=>{
+            const pt = stage.createSVGPoint(); pt.x = px; pt.y = py;
+            return pt.matrixTransform(ctm);
+          });
+          const xs = corners.map(c=>c.x), ys = corners.map(c=>c.y);
+          const nx = Math.min(...xs), ny = Math.min(...ys);
+          newShapes.push(newShape('image', {x:nx, y:ny, w:Math.max(...xs)-nx, h:Math.max(...ys)-ny, src:href}));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+
+      if(!newShapes.length){ alert('読み込めるオブジェクトが見つかりませんでした。'); return; }
+      pushHistory();
+      state.shapes.push(...newShapes);
+      state.sel = new Set(newShapes.map(s=>s.id));
+      render();
+    }catch(err){
+      alert('SVGファイルを読み込めませんでした。');
+    }finally{
+      if(holder) document.body.removeChild(holder);
+    }
+  };
+  fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
   fr.readAsText(file);
 }
 
@@ -1236,9 +1522,21 @@ $('btnNew').onclick = ()=>{
 };
 $('btnOpen').onclick = ()=> $('fileInput').click();
 $('fileInput').onchange = e=>{ if(e.target.files[0]) openJSON(e.target.files[0]); e.target.value=''; };
+$('btnImport').onclick = ()=> $('importInput').click();
+$('importInput').onchange = e=>{ if(e.target.files[0]) importFile(e.target.files[0]); e.target.value=''; };
 $('btnSave').onclick = saveJSON;
-$('btnSVG').onclick = exportSVG;
-$('btnPNG').onclick = exportPNG;
+$('btnExport').onclick = e=>{
+  e.stopPropagation();
+  const m = $('exportMenu');
+  m.style.display = (m.style.display==='flex') ? 'none' : 'flex';
+};
+document.addEventListener('click', ()=>{ $('exportMenu').style.display = 'none'; });
+$('exportMenu').querySelectorAll('[data-fmt]').forEach(btn=>{
+  btn.onclick = ()=>{
+    $('exportMenu').style.display = 'none';
+    ({svg:exportSVG, png:exportPNG, jpeg:exportJPEG, pdf:exportPDF})[btn.dataset.fmt]();
+  };
+});
 $('btnUndo').onclick = undo;
 $('btnRedo').onclick = redo;
 $('btnZoomIn').onclick = ()=> zoomAt(1.2);
