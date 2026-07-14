@@ -94,6 +94,20 @@ input[type=range]{accent-color:var(--accent);}
 .lic:hover{color:var(--text); background:transparent;}
 .lic svg{width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.6;}
 .lic.off{opacity:.35;}
+.layer.layerhead{background:#20242c;}
+.layer.layerhead.active{box-shadow:inset 3px 0 0 var(--accent); background:#2c2621;}
+.layer.layerhead .lname{font-weight:600;}
+.layer.layerobj{padding-left:14px;}
+.layer.layerobj .lname{font-size:12px;}
+.layer .ltri{width:15px; height:20px; padding:0; background:transparent; border:none;
+  color:var(--muted); cursor:pointer; font-size:9px; display:flex; align-items:center; justify-content:center;}
+.layer .ltri:hover{color:var(--text);}
+.layer .ldel:hover{color:var(--accent-h);}
+#layerHead{display:flex; align-items:center; justify-content:space-between;}
+#btnAddLayer{padding:0 8px; font-size:15px; line-height:1.4;}
+.cmykrow{gap:2px; margin-top:-3px; margin-bottom:8px;}
+.cmykrow .cmyklab{min-width:0; color:var(--muted); font-size:10px; margin-left:3px;}
+.cmykrow input[type=number]{width:34px; padding:2px 3px;}
 
 /* ===== ステータスバー ===== */
 #status{flex:0 0 auto; display:flex; gap:16px; padding:4px 12px; background:var(--panel);
@@ -163,7 +177,7 @@ input[type=range]{accent-color:var(--accent);}
     <div class="paneltitle">プロパティ</div>
     <div id="props"></div>
     <div id="layersWrap">
-      <div class="paneltitle">レイヤー（上が前面）</div>
+      <div class="paneltitle" id="layerHead"><span>レイヤー（上が前面）</span><button id="btnAddLayer" title="新規レイヤーを追加">＋</button></div>
       <div id="layers"></div>
     </div>
   </aside>
@@ -179,6 +193,8 @@ input[type=range]{accent-color:var(--accent);}
 const state = {
   doc: {w:1200, h:800, bg:'#ffffff'},
   shapes: [],
+  layers: [],           // 上位レイヤー [{id,name,visible,locked,collapsed}]（背面→前面）
+  activeLayer: null,    // 新規オブジェクトの配置先レイヤーID
   sel: new Set(),
   tool: 'select',
   zoom: 1, panX: 40, panY: 40,
@@ -188,6 +204,7 @@ const state = {
 const styleNow = {fill:'#d8d1c2', stroke:'#33312e', strokeWidth:2, opacity:1};
 let idSeq = 1;
 let groupSeq = 1;
+let layerSeq = 1;
 const undoStack = [], redoStack = [];
 let clipboard = [];
 let drag = null;          // 進行中のドラッグ操作
@@ -216,6 +233,52 @@ const snapY = v => snapAxis(v, state.guides.h);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmt = v => Math.round(v*10)/10;
 
+/* ---- 色変換（RGB / CMYK） ---- */
+function hexToRgb(hex){
+  let h = String(hex||'').replace('#','');
+  if(h.length===3) h = h.split('').map(c=>c+c).join('');
+  const n = parseInt(h,16);
+  if(!isFinite(n)) return {r:0,g:0,b:0};
+  return {r:(n>>16)&255, g:(n>>8)&255, b:n&255};
+}
+function rgbToHex(r,g,b){
+  return '#' + [r,g,b].map(v=>clamp(Math.round(v),0,255).toString(16).padStart(2,'0')).join('');
+}
+function rgbToCmyk(r,g,b){
+  r/=255; g/=255; b/=255;
+  const k = 1 - Math.max(r,g,b);
+  if(k>=1) return {c:0, m:0, y:0, k:100};
+  const c = (1-r-k)/(1-k), m = (1-g-k)/(1-k), y = (1-b-k)/(1-k);
+  return {c:Math.round(c*100), m:Math.round(m*100), y:Math.round(y*100), k:Math.round(k*100)};
+}
+function cmykToHex(c,m,y,k){
+  c=clamp(c,0,100)/100; m=clamp(m,0,100)/100; y=clamp(y,0,100)/100; k=clamp(k,0,100)/100;
+  return rgbToHex(255*(1-c)*(1-k), 255*(1-m)*(1-k), 255*(1-y)*(1-k));
+}
+
+/* ---- 上位レイヤー ---- */
+function newLayer(name){
+  return {id:'L'+(layerSeq++), name:name||('レイヤー '+(state.layers.length+1)), visible:true, locked:false, collapsed:false};
+}
+function ensureLayers(){
+  if(!Array.isArray(state.layers) || !state.layers.length){
+    state.layers = [newLayer('レイヤー 1')];
+  }
+  const ids = new Set(state.layers.map(l=>l.id));
+  if(!state.activeLayer || !ids.has(state.activeLayer))
+    state.activeLayer = state.layers[state.layers.length-1].id;
+  const def = state.layers[0].id;
+  state.shapes.forEach(s=>{ if(!s.layerId || !ids.has(s.layerId)) s.layerId = def; });
+}
+function layerOf(s){ return state.layers.find(l=>l.id===s.layerId); }
+function shapeVisible(s){ const l = layerOf(s); return s.visible && (!l || l.visible); }
+function shapeLocked(s){ const l = layerOf(s); return !!s.locked || !!(l && l.locked); }
+function layerOrderIndex(id){ const i = state.layers.findIndex(l=>l.id===id); return i<0 ? state.layers.length : i; }
+function normalizeOrder(){
+  // レイヤー順で安定ソートし、state.shapes をレイヤーごとにまとめる（重ね順の一貫性を保つ）
+  state.shapes.sort((a,b)=> layerOrderIndex(a.layerId) - layerOrderIndex(b.layerId));
+}
+
 function toWorld(e){
   const pt = stage.createSVGPoint();
   pt.x = e.clientX; pt.y = e.clientY;
@@ -233,8 +296,9 @@ function toScreen(p){
 const typeNames = {rect:'長方形', ellipse:'楕円', line:'直線', poly:'多角形', star:'星形', path:'パス', text:'テキスト', image:'画像'};
 
 function newShape(type, extra){
+  ensureLayers();
   const s = Object.assign({
-    id: idSeq++, type, name: '',
+    id: idSeq++, type, name: '', layerId: state.activeLayer,
     fill: styleNow.fill, stroke: styleNow.stroke, strokeWidth: styleNow.strokeWidth,
     opacity: styleNow.opacity, rotation: 0, visible: true, locked: false,
   }, extra);
@@ -383,7 +447,7 @@ function shapeEl(s, live){
   if(live){
     el.setAttribute('id','el-'+s.id);
     el.dataset.id = s.id;
-    if(s.locked) el.setAttribute('pointer-events','none');
+    if(shapeLocked(s)) el.setAttribute('pointer-events','none');
   }
   return el;
 }
@@ -443,21 +507,28 @@ function selBBox(){
 }
 
 /* ================= 履歴 ================= */
+function snapshot(){ return JSON.stringify({shapes:state.shapes, layers:state.layers, activeLayer:state.activeLayer}); }
+function restoreSnapshot(str){
+  const d = JSON.parse(str);
+  state.shapes = d.shapes;
+  if(Array.isArray(d.layers)) state.layers = d.layers;
+  if(d.activeLayer) state.activeLayer = d.activeLayer;
+}
 function pushHistory(){
-  undoStack.push(JSON.stringify(state.shapes));
+  undoStack.push(snapshot());
   if(undoStack.length > 100) undoStack.shift();
   redoStack.length = 0;
 }
 function undo(){
   if(!undoStack.length) return;
-  redoStack.push(JSON.stringify(state.shapes));
-  state.shapes = JSON.parse(undoStack.pop());
+  redoStack.push(snapshot());
+  restoreSnapshot(undoStack.pop());
   pruneSel(); render();
 }
 function redo(){
   if(!redoStack.length) return;
-  undoStack.push(JSON.stringify(state.shapes));
-  state.shapes = JSON.parse(redoStack.pop());
+  undoStack.push(snapshot());
+  restoreSnapshot(redoStack.pop());
   pruneSel(); render();
 }
 function pruneSel(){
@@ -528,7 +599,7 @@ function renderChrome(){
   mk('line',{x1:0,y1:20,x2:W,y2:20,stroke:'#2e313a','stroke-width':1},rl);
   mk('line',{x1:20,y1:0,x2:20,y2:H,stroke:'#2e313a','stroke-width':1},rl);
 }
-function render(){
+function render(skipProps){
   const d = state.doc;
   const ab = $('artboard');
   ab.setAttribute('width',d.w); ab.setAttribute('height',d.h); ab.setAttribute('fill',d.bg==='none'?'#ffffff':d.bg);
@@ -539,13 +610,15 @@ function render(){
   $('gridpat').setAttribute('height',state.gridSize);
   $('gridpath').setAttribute('d',`M ${state.gridSize} 0 L 0 0 0 ${state.gridSize}`);
 
+  ensureLayers();
+  normalizeOrder();
   updateGradientDefs();
   shapesLayer.innerHTML = '';
-  state.shapes.forEach(s=>{ if(s.visible) shapesLayer.appendChild(shapeEl(s,true)); });
+  state.shapes.forEach(s=>{ if(shapeVisible(s)) shapesLayer.appendChild(shapeEl(s,true)); });
 
   renderHandles();
   renderLayers();
-  renderProps();
+  if(!skipProps) renderProps();
   updateWorld();
   autosave();
 }
@@ -871,7 +944,7 @@ window.addEventListener('pointermove', e=>{
     const x2=Math.max(drag.start.x,p.x), y2=Math.max(drag.start.y,p.y);
     state.sel = new Set(drag.keep);
     state.shapes.forEach(s=>{
-      if(!s.visible || s.locked) return;
+      if(!shapeVisible(s) || shapeLocked(s)) return;
       const b = renderBBox(s);
       if(b.x < x2 && b.x+b.w > x1 && b.y < y2 && b.y+b.h > y1) state.sel.add(s.id);
     });
@@ -1157,6 +1230,21 @@ function colorIn(id,label,val){
     <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
     <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`);
 }
+/* 色ピッカー＋CMYK 数値入力 */
+function colorInCMYK(id,label,val){
+  const none = val==='none';
+  const cm = none ? {c:0,m:0,y:0,k:0} : rgbToCmyk(hexToRgb(val).r, hexToRgb(val).g, hexToRgb(val).b);
+  const dis = none ? 'disabled' : '';
+  return propRow(`<label>${label}</label>
+    <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
+    <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`)
+    + `<div class="prow cmykrow">
+      <span class="cmyklab">C</span><input type="number" id="${id}C" min="0" max="100" value="${cm.c}" ${dis}>
+      <span class="cmyklab">M</span><input type="number" id="${id}M" min="0" max="100" value="${cm.m}" ${dis}>
+      <span class="cmyklab">Y</span><input type="number" id="${id}Y" min="0" max="100" value="${cm.y}" ${dis}>
+      <span class="cmyklab">K</span><input type="number" id="${id}K" min="0" max="100" value="${cm.k}" ${dis}>
+    </div>`;
+}
 function fillTypeOf(v){ return (v && typeof v==='object') ? v.type : 'solid'; }
 function fillPanel(one){
   const v = one.fill;
@@ -1167,7 +1255,7 @@ function fillPanel(one){
       <option value="radial" ${type==='radial'?'selected':''}>放射グラデーション</option>
     </select></div>`;
   if(type==='solid'){
-    html += colorIn('pFill','　', v);
+    html += colorInCMYK('pFill','　', v);
   }else{
     const stops = v.stops || [{offset:0,color:'#d8d1c2'},{offset:1,color:'#33312e'}];
     html += propRow(`<label>色1</label><input type="color" id="pGrad0" value="${stops[0].color}">
@@ -1195,7 +1283,7 @@ function bindFillPanel(one){
     render();
   };
   if(fillTypeOf(one.fill)==='solid'){
-    bindColor('pFill','fill');
+    bindColorCMYK('pFill','fill');
   }else{
     const pg0 = $('pGrad0'), pg1 = $('pGrad1'), pga = $('pGradAngle');
     pg0.oninput = ()=>{ pushHistory(); one.fill.stops[0].color = pg0.value; render(); };
@@ -1238,10 +1326,10 @@ function renderProps(){
   const isLine = one && one.type==='line';
   const isImage = one && one.type==='image';
   if(!isLine && !isImage){
-    html += one ? fillPanel(one) : colorIn('pFill','塗り', styleNow.fill);
+    html += one ? fillPanel(one) : colorInCMYK('pFill','塗り', styleNow.fill);
   }
   if(!isImage){
-    html += colorIn('pStroke','線', one ? one.stroke : styleNow.stroke);
+    html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke);
     html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
     if(one){
       const canArrow = one.type==='line' || (one.type==='path' && !one.closed);
@@ -1329,8 +1417,8 @@ function renderProps(){
   op.onchange = ()=>{ pushHistory(); render(); };
 
   if(!isImage){
-    if(one) bindFillPanel(one); else bindColor('pFill','fill');
-    bindColor('pStroke','stroke');
+    if(one) bindFillPanel(one); else bindColorCMYK('pFill','fill');
+    bindColorCMYK('pStroke','stroke');
     bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
   }
 
@@ -1352,6 +1440,25 @@ function bindColor(base, key){
   n.onchange = ()=>{ pushHistory();
     const v = n.checked ? 'none' : c.value;
     selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
+}
+/* 色ピッカー＋CMYK を key に束縛 */
+function bindColorCMYK(base, key){
+  const c = $(base), n = $(base+'None');
+  if(!c) return;
+  // ピッカー・「なし」操作はパネルを再構築（CMYK欄も新しい色に追従）
+  const applyFull = v=>{ pushHistory(); selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
+  c.oninput = ()=> applyFull(c.value);
+  n.onchange = ()=> applyFull(n.checked ? 'none' : c.value);
+  // CMYK欄の編集はパネルを再構築せず、入力値をそのまま保持（RGB往復による値の揺れを防ぐ）
+  const cc=$(base+'C'), cm=$(base+'M'), cy=$(base+'Y'), ck=$(base+'K');
+  const fromCMYK = ()=>{
+    const hex = cmykToHex(+cc.value||0, +cm.value||0, +cy.value||0, +ck.value||0);
+    pushHistory();
+    selShapes().forEach(s=>s[key]=hex); styleNow[key]=hex;
+    c.value = hex;
+    render(true);
+  };
+  [cc,cm,cy,ck].forEach(inp=>{ if(inp) inp.onchange = fromCMYK; });
 }
 
 /* ================= 整列・重ね順 ================= */
@@ -1513,6 +1620,43 @@ function syncStyleFromSel(){
   styleNow.stroke = s.stroke; styleNow.strokeWidth = s.strokeWidth; styleNow.opacity = s.opacity;
 }
 
+/* ================= 上位レイヤー操作 ================= */
+function addLayer(){
+  pushHistory();
+  const l = newLayer();
+  const idx = state.layers.findIndex(x=>x.id===state.activeLayer);
+  state.layers.splice(idx<0 ? state.layers.length : idx+1, 0, l);
+  state.activeLayer = l.id;
+  render();
+}
+function deleteLayer(id){
+  if(state.layers.length <= 1){ alert('最後のレイヤーは削除できません。'); return; }
+  const l = state.layers.find(x=>x.id===id); if(!l) return;
+  const cnt = state.shapes.filter(s=>s.layerId===id).length;
+  if(cnt && !confirm(`レイヤー「${l.name}」内の${cnt}個のオブジェクトも削除されます。よろしいですか？`)) return;
+  pushHistory();
+  state.shapes = state.shapes.filter(s=>s.layerId!==id);
+  state.layers = state.layers.filter(x=>x.id!==id);
+  if(state.activeLayer===id) state.activeLayer = state.layers[state.layers.length-1].id;
+  pruneSel(); render();
+}
+function reorderLayer(id, dir){
+  const i = state.layers.findIndex(l=>l.id===id); if(i<0) return;
+  const j = dir==='up' ? i+1 : i-1;   // up = 前面へ（配列後方）
+  if(j<0 || j>=state.layers.length) return;
+  pushHistory();
+  [state.layers[i], state.layers[j]] = [state.layers[j], state.layers[i]];
+  render();
+}
+function moveSelToLayer(id){
+  const ss = selShapes(); if(!ss.length) return;
+  pushHistory();
+  ss.forEach(s=> s.layerId = id);
+  state.activeLayer = id;
+  render();
+}
+function toggleLayer(l, key){ pushHistory(); l[key] = !l[key]; render(); }
+
 /* ================= レイヤーパネル ================= */
 const IC = {
   eye:'<svg viewBox="0 0 20 20"><path d="M2 10 C5 5.5, 15 5.5, 18 10 C15 14.5, 5 14.5, 2 10 Z"/><circle cx="10" cy="10" r="2.4"/></svg>',
@@ -1521,46 +1665,93 @@ const IC = {
   up:'<svg viewBox="0 0 20 20"><path d="M10 15 V5 M6 9 L10 5 L14 9"/></svg>',
   down:'<svg viewBox="0 0 20 20"><path d="M10 5 V15 M6 11 L10 15 L14 11"/></svg>',
 };
+function nameEditor(span, cur, commitFn){
+  const input = document.createElement('input');
+  input.value = cur;
+  span.textContent=''; span.appendChild(input); input.focus(); input.select();
+  const done = ()=>{ commitFn(input.value); };
+  input.onblur = done;
+  input.onkeydown = ev=>{ ev.stopPropagation(); if(ev.key==='Enter') done(); if(ev.key==='Escape') render(); };
+}
+function shapeRow(s){
+  const row = document.createElement('div');
+  row.className = 'layer layerobj' + (state.sel.has(s.id) ? ' sel' : '');
+  row.innerHTML =
+    `<button class="lic ${s.visible?'':'off'}" data-a="vis" title="表示/非表示">${IC.eye}</button>` +
+    `<button class="lic ${s.locked?'':'off'}" data-a="lock" title="ロック">${s.locked?IC.lock:IC.unlock}</button>` +
+    `<span class="lname" title="ダブルクリックで名前変更">${esc(s.name)}${s.groupId ? ` <span style="color:var(--muted); font-size:10px">[${esc(String(s.groupId).toUpperCase())}]</span>` : ''}</span>` +
+    `<button class="lic" data-a="up" title="前面へ">${IC.up}</button>` +
+    `<button class="lic" data-a="down" title="背面へ">${IC.down}</button>`;
+  row.onclick = e=>{
+    const a = e.target.closest('[data-a]');
+    if(a){
+      const act = a.dataset.a;
+      if(act==='vis') toggleLayer(s, 'visible');
+      if(act==='lock') toggleLayer(s, 'locked');
+      if(act==='up'||act==='down'){ state.sel=new Set([s.id]); reorder(act); }
+      return;
+    }
+    if(e.shiftKey){ state.sel.has(s.id) ? state.sel.delete(s.id) : state.sel.add(s.id); }
+    else state.sel = new Set([s.id]);
+    state.activeLayer = s.layerId;
+    render();
+  };
+  row.querySelector('.lname').ondblclick = e=>{
+    e.stopPropagation();
+    nameEditor(e.currentTarget, s.name, v=>{ pushHistory(); s.name = v || s.name; render(); });
+  };
+  return row;
+}
 function renderLayers(){
   const el = $('layers');
+  ensureLayers();
   el.innerHTML = '';
-  [...state.shapes].reverse().forEach(s=>{
-    const row = document.createElement('div');
-    row.className = 'layer' + (state.sel.has(s.id) ? ' sel' : '');
-    row.innerHTML =
-      `<button class="lic ${s.visible?'':'off'}" data-a="vis" title="表示/非表示">${IC.eye}</button>` +
-      `<button class="lic ${s.locked?'':'off'}" data-a="lock" title="ロック">${s.locked?IC.lock:IC.unlock}</button>` +
-      `<span class="lname" title="ダブルクリックで名前変更">${esc(s.name)}${s.groupId ? ` <span style="color:var(--muted); font-size:10px">[${esc(String(s.groupId).toUpperCase())}]</span>` : ''}</span>` +
-      `<button class="lic" data-a="up" title="前面へ">${IC.up}</button>` +
-      `<button class="lic" data-a="down" title="背面へ">${IC.down}</button>`;
-    row.onclick = e=>{
-      const a = e.target.closest('[data-a]');
+  // 前面のレイヤーを上に表示（配列を逆順で描画）
+  [...state.layers].reverse().forEach(layer=>{
+    const head = document.createElement('div');
+    head.className = 'layer layerhead' + (state.activeLayer===layer.id ? ' active' : '');
+    head.innerHTML =
+      `<button class="ltri" data-la="collapse" title="開閉">${layer.collapsed?'▸':'▾'}</button>` +
+      `<button class="lic ${layer.visible?'':'off'}" data-la="vis" title="表示/非表示">${IC.eye}</button>` +
+      `<button class="lic ${layer.locked?'':'off'}" data-la="lock" title="ロック">${layer.locked?IC.lock:IC.unlock}</button>` +
+      `<span class="lname" title="クリックで選択先に設定／ダブルクリックで名前変更">${esc(layer.name)}</span>` +
+      `<button class="lic" data-la="moveHere" title="選択中のオブジェクトをこのレイヤーへ移動">⇐</button>` +
+      `<button class="lic" data-la="up" title="前面へ">${IC.up}</button>` +
+      `<button class="lic" data-la="down" title="背面へ">${IC.down}</button>` +
+      `<button class="lic ldel" data-la="del" title="レイヤー削除">✕</button>`;
+    head.onclick = e=>{
+      const a = e.target.closest('[data-la]');
       if(a){
-        const act = a.dataset.a;
-        if(act==='vis'){ pushHistory(); s.visible=!s.visible; render(); }
-        if(act==='lock'){ pushHistory(); s.locked=!s.locked; render(); }
-        if(act==='up'||act==='down'){ state.sel=new Set([s.id]); reorder(act); }
+        const act = a.dataset.la;
+        if(act==='collapse'){ layer.collapsed = !layer.collapsed; render(); }
+        if(act==='vis') toggleLayer(layer, 'visible');
+        if(act==='lock') toggleLayer(layer, 'locked');
+        if(act==='moveHere') moveSelToLayer(layer.id);
+        if(act==='up') reorderLayer(layer.id, 'up');
+        if(act==='down') reorderLayer(layer.id, 'down');
+        if(act==='del') deleteLayer(layer.id);
         return;
       }
-      if(e.shiftKey){ state.sel.has(s.id) ? state.sel.delete(s.id) : state.sel.add(s.id); }
-      else state.sel = new Set([s.id]);
+      state.activeLayer = layer.id;
       render();
     };
-    row.querySelector('.lname').ondblclick = e=>{
+    head.querySelector('.lname').ondblclick = e=>{
       e.stopPropagation();
-      const span = e.currentTarget;
-      const input = document.createElement('input');
-      input.value = s.name;
-      span.textContent=''; span.appendChild(input); input.focus(); input.select();
-      const commit = ()=>{ pushHistory(); s.name = input.value || s.name; render(); };
-      input.onblur = commit;
-      input.onkeydown = ev=>{ ev.stopPropagation(); if(ev.key==='Enter') commit(); if(ev.key==='Escape') render(); };
+      nameEditor(e.currentTarget, layer.name, v=>{ pushHistory(); layer.name = v || layer.name; render(); });
     };
-    el.appendChild(row);
+    el.appendChild(head);
+    if(!layer.collapsed){
+      const inLayer = state.shapes.filter(s=>s.layerId===layer.id);
+      [...inLayer].reverse().forEach(s=> el.appendChild(shapeRow(s)));
+      if(!inLayer.length){
+        const empty = document.createElement('div');
+        empty.className = 'layer layerobj';
+        empty.style.cssText = 'color:var(--muted); cursor:default; font-size:11px;';
+        empty.textContent = '（空のレイヤー）';
+        el.appendChild(empty);
+      }
+    }
   });
-  if(!state.shapes.length){
-    el.innerHTML = '<div style="padding:14px 10px; color:var(--muted); line-height:1.7">まだ図形がありません。<br>左のツールでキャンバスに描画してください。</div>';
-  }
 }
 
 /* ================= 入出力 ================= */
@@ -1578,7 +1769,7 @@ function buildSVGString(){
   if(defs.length) out += '<defs>'+defs.join('')+'</defs>';
   if(d.bg && d.bg!=='none') out += `<rect width="${d.w}" height="${d.h}" fill="${d.bg}"/>`;
   const ser = new XMLSerializer();
-  state.shapes.forEach(s=>{ if(s.visible) out += ser.serializeToString(shapeEl(s,false)); });
+  state.shapes.forEach(s=>{ if(shapeVisible(s)) out += ser.serializeToString(shapeEl(s,false)); });
   out += '</svg>';
   return out;
 }
@@ -1648,7 +1839,8 @@ function buildPDF(jpegBytes, wPx, hPx){
 }
 function saveJSON(){
   const data = {app:'vector-koubou', version:1, fname:$('fname').value,
-    doc:state.doc, shapes:state.shapes, idSeq, groupSeq, guides:state.guides};
+    doc:state.doc, shapes:state.shapes, layers:state.layers, activeLayer:state.activeLayer,
+    idSeq, groupSeq, layerSeq, guides:state.guides};
   download(fnameBase()+'.json', new Blob([JSON.stringify(data,null,1)], {type:'application/json'}));
 }
 function openJSON(file){
@@ -1660,9 +1852,13 @@ function openJSON(file){
       pushHistory();
       state.doc = data.doc || state.doc;
       state.shapes = data.shapes;
+      state.layers = Array.isArray(data.layers) ? data.layers : [];
+      state.activeLayer = data.activeLayer || null;
       state.guides = data.guides || state.guides;
       idSeq = data.idSeq || (Math.max(0,...state.shapes.map(s=>s.id))+1);
       groupSeq = data.groupSeq || groupSeq;
+      layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
+      ensureLayers();
       if(data.fname) $('fname').value = data.fname;
       state.sel.clear();
       zoomFit();
@@ -1825,7 +2021,8 @@ function autosave(){
   autosaveTimer = setTimeout(()=>{
     try{
       localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({app:'vector-koubou', version:1,
-        fname:$('fname').value, doc:state.doc, shapes:state.shapes, idSeq, groupSeq, guides:state.guides}));
+        fname:$('fname').value, doc:state.doc, shapes:state.shapes, layers:state.layers,
+        activeLayer:state.activeLayer, idSeq, groupSeq, layerSeq, guides:state.guides}));
     }catch(err){ /* 容量超過などで保存できない場合も動作は継続する */ }
   }, 400);
 }
@@ -1835,9 +2032,13 @@ function restoreAutosave(){
     if(!data || !Array.isArray(data.shapes) || !data.shapes.length) return false;
     state.doc = data.doc || state.doc;
     state.shapes = data.shapes;
+    state.layers = Array.isArray(data.layers) ? data.layers : [];
+    state.activeLayer = data.activeLayer || null;
     state.guides = data.guides || {v:[], h:[]};
     idSeq = data.idSeq || (Math.max(0,...state.shapes.map(s=>s.id))+1);
     groupSeq = data.groupSeq || 1;
+    layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
+    ensureLayers();
     if(data.fname) $('fname').value = data.fname;
     return true;
   }catch(err){ return false; }
@@ -1857,7 +2058,7 @@ window.addEventListener('keydown', e=>{
     // Ctrl+V は document の paste イベント側で処理（外部クリップボード対応のため）
     if(k==='d'){ e.preventDefault(); duplicateSel(); return; }
     if(k==='g'){ e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); return; }
-    if(k==='a'){ e.preventDefault(); state.sel = new Set(state.shapes.filter(s=>s.visible&&!s.locked).map(s=>s.id)); render(); return; }
+    if(k==='a'){ e.preventDefault(); state.sel = new Set(state.shapes.filter(s=>shapeVisible(s)&&!shapeLocked(s)).map(s=>s.id)); render(); return; }
     if(e.key==='=' || e.key==='+'){ e.preventDefault(); zoomAt(1.2); return; }
     if(e.key==='-'){ e.preventDefault(); zoomAt(1/1.2); return; }
     if(e.key==='0'){ e.preventDefault(); zoomFit(); return; }
@@ -1912,6 +2113,7 @@ $('btnNew').onclick = ()=>{
   if(state.shapes.length && !confirm('現在のデザインを破棄して新規作成しますか？（保存していない内容は失われます）')) return;
   state.shapes = []; state.sel.clear(); undoStack.length=0; redoStack.length=0;
   state.guides = {v:[], h:[]};
+  state.layers = []; state.activeLayer = null; layerSeq = 1; ensureLayers();
   try{ localStorage.removeItem(AUTOSAVE_KEY); }catch(err){}
   $('fname').value = '無題のデザイン';
   zoomFit();
@@ -1942,6 +2144,7 @@ $('btnFit').onclick = zoomFit;
 $('chkGrid').onchange = e=>{ state.grid = e.target.checked; render(); };
 $('chkSnap').onchange = e=>{ state.snap = e.target.checked; };
 $('chkRuler').onchange = e=>{ state.ruler = e.target.checked; renderChrome(); };
+$('btnAddLayer').onclick = addLayer;
 
 /* ================= 起動 ================= */
 buildToolbar();
