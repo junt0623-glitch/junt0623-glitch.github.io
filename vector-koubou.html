@@ -64,7 +64,7 @@ input[type=range]{accent-color:var(--accent);}
 #stage.tool-select{cursor:default;}
 #stage.tool-hand{cursor:grab;}
 #stage.panning{cursor:grabbing !important;}
-#stage.tool-rect,#stage.tool-ellipse,#stage.tool-line,#stage.tool-poly,#stage.tool-star,#stage.tool-pen,#stage.tool-pencil{cursor:crosshair;}
+#stage.tool-rect,#stage.tool-ellipse,#stage.tool-line,#stage.tool-poly,#stage.tool-star,#stage.tool-pen,#stage.tool-pencil,#stage.tool-node,#stage.tool-picker{cursor:crosshair;}
 #stage.tool-text{cursor:text;}
 
 #textEditor{position:absolute; display:none; z-index:20;}
@@ -94,6 +94,20 @@ input[type=range]{accent-color:var(--accent);}
 .lic:hover{color:var(--text); background:transparent;}
 .lic svg{width:14px; height:14px; stroke:currentColor; fill:none; stroke-width:1.6;}
 .lic.off{opacity:.35;}
+.layer.layerhead{background:#20242c;}
+.layer.layerhead.active{box-shadow:inset 3px 0 0 var(--accent); background:#2c2621;}
+.layer.layerhead .lname{font-weight:600;}
+.layer.layerobj{padding-left:14px;}
+.layer.layerobj .lname{font-size:12px;}
+.layer .ltri{width:15px; height:20px; padding:0; background:transparent; border:none;
+  color:var(--muted); cursor:pointer; font-size:9px; display:flex; align-items:center; justify-content:center;}
+.layer .ltri:hover{color:var(--text);}
+.layer .ldel:hover{color:var(--accent-h);}
+#layerHead{display:flex; align-items:center; justify-content:space-between;}
+#btnAddLayer{padding:0 8px; font-size:15px; line-height:1.4;}
+.cmykrow{gap:2px; margin-top:-3px; margin-bottom:8px;}
+.cmykrow .cmyklab{min-width:0; color:var(--muted); font-size:10px; margin-left:3px;}
+.cmykrow input[type=number]{width:34px; padding:2px 3px;}
 
 /* ===== ステータスバー ===== */
 #status{flex:0 0 auto; display:flex; gap:16px; padding:4px 12px; background:var(--panel);
@@ -110,9 +124,17 @@ input[type=range]{accent-color:var(--accent);}
   <span class="sep"></span>
   <button id="btnNew">新規</button>
   <button id="btnOpen">開く</button>
+  <button id="btnImport">インポート</button>
   <button id="btnSave">保存 (.json)</button>
-  <button id="btnSVG" class="primary">SVG書き出し</button>
-  <button id="btnPNG">PNG書き出し</button>
+  <div id="exportWrap" style="position:relative; display:inline-block;">
+    <button id="btnExport" class="primary">書き出し ▾</button>
+    <div id="exportMenu" style="display:none; flex-direction:column; gap:2px; position:absolute; top:calc(100% + 2px); left:0; background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:4px; z-index:30; min-width:130px;">
+      <button data-fmt="svg" style="text-align:left; width:100%;">SVG (.svg)</button>
+      <button data-fmt="png" style="text-align:left; width:100%;">PNG (.png)</button>
+      <button data-fmt="jpeg" style="text-align:left; width:100%;">JPEG (.jpg)</button>
+      <button data-fmt="pdf" style="text-align:left; width:100%;">PDF (.pdf)</button>
+    </div>
+  </div>
   <span class="sep"></span>
   <button id="btnUndo" title="元に戻す (Ctrl+Z)">↩ 戻す</button>
   <button id="btnRedo" title="やり直す (Ctrl+Y)">↪ 進む</button>
@@ -124,6 +146,7 @@ input[type=range]{accent-color:var(--accent);}
   <span class="sep"></span>
   <label class="toggle"><input type="checkbox" id="chkGrid">グリッド</label>
   <label class="toggle"><input type="checkbox" id="chkSnap">スナップ</label>
+  <label class="toggle"><input type="checkbox" id="chkRuler" checked>定規</label>
 </header>
 
 <div id="main">
@@ -136,6 +159,7 @@ input[type=range]{accent-color:var(--accent);}
           <path id="gridpath" d="M 20 0 L 0 0 0 20" fill="none" stroke="rgba(0,0,0,.12)" stroke-width="1"/>
         </pattern>
       </defs>
+      <defs id="gradDefs"></defs>
       <g id="world">
         <rect id="artboard" x="0" y="0" fill="#ffffff" style="filter:drop-shadow(0 3px 14px rgba(0,0,0,.45))"/>
         <rect id="gridRect" x="0" y="0" fill="url(#gridpat)" style="display:none" pointer-events="none"/>
@@ -143,6 +167,8 @@ input[type=range]{accent-color:var(--accent);}
         <g id="overlayLayer" pointer-events="none"></g>
         <g id="handleLayer"></g>
       </g>
+      <g id="guideLayer"></g>
+      <g id="rulerLayer"></g>
     </svg>
     <div id="textEditor"><textarea id="textArea" rows="1"></textarea></div>
   </div>
@@ -151,7 +177,7 @@ input[type=range]{accent-color:var(--accent);}
     <div class="paneltitle">プロパティ</div>
     <div id="props"></div>
     <div id="layersWrap">
-      <div class="paneltitle">レイヤー（上が前面）</div>
+      <div class="paneltitle" id="layerHead"><span>レイヤー（上が前面）</span><button id="btnAddLayer" title="新規レイヤーを追加">＋</button></div>
       <div id="layers"></div>
     </div>
   </aside>
@@ -159,6 +185,7 @@ input[type=range]{accent-color:var(--accent);}
 
 <footer id="status"><span id="coords">x: 0, y: 0</span><span id="hint"></span></footer>
 <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
+<input type="file" id="importInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/gif,image/webp,image/bmp" style="display:none">
 
 <script>
 "use strict";
@@ -166,13 +193,18 @@ input[type=range]{accent-color:var(--accent);}
 const state = {
   doc: {w:1200, h:800, bg:'#ffffff'},
   shapes: [],
+  layers: [],           // 上位レイヤー [{id,name,visible,locked,collapsed}]（背面→前面）
+  activeLayer: null,    // 新規オブジェクトの配置先レイヤーID
   sel: new Set(),
   tool: 'select',
   zoom: 1, panX: 40, panY: 40,
   grid: false, snap: false, gridSize: 20,
+  ruler: true, guides: {v:[], h:[]},
 };
 const styleNow = {fill:'#d8d1c2', stroke:'#33312e', strokeWidth:2, opacity:1};
 let idSeq = 1;
+let groupSeq = 1;
+let layerSeq = 1;
 const undoStack = [], redoStack = [];
 let clipboard = [];
 let drag = null;          // 進行中のドラッグ操作
@@ -187,9 +219,65 @@ const stage = $('stage'), world = $('world'), shapesLayer = $('shapesLayer'),
 const deg2rad = d => d*Math.PI/180;
 const dist = (a,b) => Math.hypot(a.x-b.x, a.y-b.y);
 const clamp = (v,lo,hi) => Math.max(lo, Math.min(hi, v));
-const sn = v => state.snap ? Math.round(v/state.gridSize)*state.gridSize : v;
+const snGrid = v => state.snap ? Math.round(v/state.gridSize)*state.gridSize : v;
+function snapAxis(v, guides){
+  const g0 = snGrid(v);
+  if(state.ruler && guides.length){
+    const thr = 6/state.zoom;
+    for(const g of guides){ if(Math.abs(v-g)<thr) return g; }
+  }
+  return g0;
+}
+const snapX = v => snapAxis(v, state.guides.v);
+const snapY = v => snapAxis(v, state.guides.h);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmt = v => Math.round(v*10)/10;
+
+/* ---- 色変換（RGB / CMYK） ---- */
+function hexToRgb(hex){
+  let h = String(hex||'').replace('#','');
+  if(h.length===3) h = h.split('').map(c=>c+c).join('');
+  const n = parseInt(h,16);
+  if(!isFinite(n)) return {r:0,g:0,b:0};
+  return {r:(n>>16)&255, g:(n>>8)&255, b:n&255};
+}
+function rgbToHex(r,g,b){
+  return '#' + [r,g,b].map(v=>clamp(Math.round(v),0,255).toString(16).padStart(2,'0')).join('');
+}
+function rgbToCmyk(r,g,b){
+  r/=255; g/=255; b/=255;
+  const k = 1 - Math.max(r,g,b);
+  if(k>=1) return {c:0, m:0, y:0, k:100};
+  const c = (1-r-k)/(1-k), m = (1-g-k)/(1-k), y = (1-b-k)/(1-k);
+  return {c:Math.round(c*100), m:Math.round(m*100), y:Math.round(y*100), k:Math.round(k*100)};
+}
+function cmykToHex(c,m,y,k){
+  c=clamp(c,0,100)/100; m=clamp(m,0,100)/100; y=clamp(y,0,100)/100; k=clamp(k,0,100)/100;
+  return rgbToHex(255*(1-c)*(1-k), 255*(1-m)*(1-k), 255*(1-y)*(1-k));
+}
+
+/* ---- 上位レイヤー ---- */
+function newLayer(name){
+  return {id:'L'+(layerSeq++), name:name||('レイヤー '+(state.layers.length+1)), visible:true, locked:false, collapsed:false};
+}
+function ensureLayers(){
+  if(!Array.isArray(state.layers) || !state.layers.length){
+    state.layers = [newLayer('レイヤー 1')];
+  }
+  const ids = new Set(state.layers.map(l=>l.id));
+  if(!state.activeLayer || !ids.has(state.activeLayer))
+    state.activeLayer = state.layers[state.layers.length-1].id;
+  const def = state.layers[0].id;
+  state.shapes.forEach(s=>{ if(!s.layerId || !ids.has(s.layerId)) s.layerId = def; });
+}
+function layerOf(s){ return state.layers.find(l=>l.id===s.layerId); }
+function shapeVisible(s){ const l = layerOf(s); return s.visible && (!l || l.visible); }
+function shapeLocked(s){ const l = layerOf(s); return !!s.locked || !!(l && l.locked); }
+function layerOrderIndex(id){ const i = state.layers.findIndex(l=>l.id===id); return i<0 ? state.layers.length : i; }
+function normalizeOrder(){
+  // レイヤー順で安定ソートし、state.shapes をレイヤーごとにまとめる（重ね順の一貫性を保つ）
+  state.shapes.sort((a,b)=> layerOrderIndex(a.layerId) - layerOrderIndex(b.layerId));
+}
 
 function toWorld(e){
   const pt = stage.createSVGPoint();
@@ -205,11 +293,12 @@ function toScreen(p){
 }
 
 /* ================= 図形定義 ================= */
-const typeNames = {rect:'長方形', ellipse:'楕円', line:'直線', poly:'多角形', star:'星形', path:'パス', text:'テキスト'};
+const typeNames = {rect:'長方形', ellipse:'楕円', line:'直線', poly:'多角形', star:'星形', path:'パス', text:'テキスト', image:'画像'};
 
 function newShape(type, extra){
+  ensureLayers();
   const s = Object.assign({
-    id: idSeq++, type, name: '',
+    id: idSeq++, type, name: '', layerId: state.activeLayer,
     fill: styleNow.fill, stroke: styleNow.stroke, strokeWidth: styleNow.strokeWidth,
     opacity: styleNow.opacity, rotation: 0, visible: true, locked: false,
   }, extra);
@@ -251,10 +340,47 @@ function pathD(s){
   return d;
 }
 
+/* ================= グラデーション ================= */
+function gradientId(s){ return 'grad'+s.id; }
+function gradientDefString(s){
+  const g = s.fill, gid = gradientId(s);
+  const stops = (g.stops||[]).map(st=>`<stop offset="${fmt(clamp(st.offset,0,1)*100)}%" stop-color="${esc(st.color)}"/>`).join('');
+  if(g.type==='radial'){
+    return `<radialGradient id="${gid}" cx="50%" cy="50%" r="70%">${stops}</radialGradient>`;
+  }
+  const ang = deg2rad(g.angle||0);
+  const x1 = 50 - 50*Math.cos(ang), y1 = 50 - 50*Math.sin(ang);
+  const x2 = 50 + 50*Math.cos(ang), y2 = 50 + 50*Math.sin(ang);
+  return `<linearGradient id="${gid}" x1="${fmt(x1)}%" y1="${fmt(y1)}%" x2="${fmt(x2)}%" y2="${fmt(y2)}%">${stops}</linearGradient>`;
+}
+function markerDefString(s){
+  const col = s.stroke==='none' ? '#000000' : s.stroke;
+  return `<marker id="arw${s.id}" viewBox="0 0 10 10" refX="8.5" refY="5" markerWidth="4.5" markerHeight="4.5" orient="auto-start-reverse" markerUnits="strokeWidth"><path d="M 0 0 L 10 5 L 0 10 z" fill="${esc(col)}"/></marker>`;
+}
+function dynamicDefStrings(){
+  const out = [];
+  state.shapes.forEach(s=>{
+    if(s.fill && typeof s.fill==='object') out.push(gradientDefString(s));
+    if((s.arrowS||s.arrowE) && (s.type==='line'||(s.type==='path'&&!s.closed))) out.push(markerDefString(s));
+  });
+  return out;
+}
+function updateGradientDefs(){
+  $('gradDefs').innerHTML = dynamicDefStrings().join('');
+}
+
 function shapeEl(s, live){
   const NS = 'http://www.w3.org/2000/svg';
   let el;
   switch(s.type){
+    case 'image':
+      el = document.createElementNS(NS,'image');
+      el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
+      el.setAttribute('width',fmt(Math.max(0,s.w))); el.setAttribute('height',fmt(Math.max(0,s.h)));
+      el.setAttribute('preserveAspectRatio','none');
+      el.setAttribute('href', s.src);
+      el.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href', s.src);
+      break;
     case 'rect':
       el = document.createElementNS(NS,'rect');
       el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
@@ -298,14 +424,20 @@ function shapeEl(s, live){
   }
   if(s.type==='line' || (s.type==='path' && !s.closed && s.fill==='none')){
     el.setAttribute('fill','none');
-  }else if(s.type!=='line'){
-    el.setAttribute('fill', s.fill);
+  }else if(s.type!=='line' && s.type!=='image'){
+    el.setAttribute('fill', typeof s.fill==='object' ? `url(#${gradientId(s)})` : s.fill);
   }
-  if(s.stroke!=='none' && s.strokeWidth>0){
+  if(s.stroke!=='none' && s.strokeWidth>0 && s.type!=='image'){
     el.setAttribute('stroke', s.stroke);
     el.setAttribute('stroke-width', s.strokeWidth);
     el.setAttribute('stroke-linecap','round');
     el.setAttribute('stroke-linejoin','round');
+    if(s.dash==='dash') el.setAttribute('stroke-dasharray', `${s.strokeWidth*3} ${s.strokeWidth*2}`);
+    else if(s.dash==='dot') el.setAttribute('stroke-dasharray', `0.1 ${s.strokeWidth*2}`);
+    if(s.type==='line' || (s.type==='path' && !s.closed)){
+      if(s.arrowS) el.setAttribute('marker-start', `url(#arw${s.id})`);
+      if(s.arrowE) el.setAttribute('marker-end', `url(#arw${s.id})`);
+    }
   }
   if(s.opacity < 1) el.setAttribute('opacity', s.opacity);
   if(s.rotation){
@@ -315,7 +447,7 @@ function shapeEl(s, live){
   if(live){
     el.setAttribute('id','el-'+s.id);
     el.dataset.id = s.id;
-    if(s.locked) el.setAttribute('pointer-events','none');
+    if(shapeLocked(s)) el.setAttribute('pointer-events','none');
   }
   return el;
 }
@@ -324,6 +456,7 @@ function shapeEl(s, live){
 function geomBBox(s){
   switch(s.type){
     case 'rect': return {x:s.x, y:s.y, w:s.w, h:s.h};
+    case 'image': return {x:s.x, y:s.y, w:s.w, h:s.h};
     case 'ellipse': return {x:s.cx-s.rx, y:s.cy-s.ry, w:s.rx*2, h:s.ry*2};
     case 'line':{
       const x=Math.min(s.x1,s.x2), y=Math.min(s.y1,s.y2);
@@ -374,21 +507,28 @@ function selBBox(){
 }
 
 /* ================= 履歴 ================= */
+function snapshot(){ return JSON.stringify({shapes:state.shapes, layers:state.layers, activeLayer:state.activeLayer}); }
+function restoreSnapshot(str){
+  const d = JSON.parse(str);
+  state.shapes = d.shapes;
+  if(Array.isArray(d.layers)) state.layers = d.layers;
+  if(d.activeLayer) state.activeLayer = d.activeLayer;
+}
 function pushHistory(){
-  undoStack.push(JSON.stringify(state.shapes));
+  undoStack.push(snapshot());
   if(undoStack.length > 100) undoStack.shift();
   redoStack.length = 0;
 }
 function undo(){
   if(!undoStack.length) return;
-  redoStack.push(JSON.stringify(state.shapes));
-  state.shapes = JSON.parse(undoStack.pop());
+  redoStack.push(snapshot());
+  restoreSnapshot(undoStack.pop());
   pruneSel(); render();
 }
 function redo(){
   if(!redoStack.length) return;
-  undoStack.push(JSON.stringify(state.shapes));
-  state.shapes = JSON.parse(redoStack.pop());
+  undoStack.push(snapshot());
+  restoreSnapshot(redoStack.pop());
   pruneSel(); render();
 }
 function pruneSel(){
@@ -400,8 +540,66 @@ function pruneSel(){
 function updateWorld(){
   world.setAttribute('transform', `translate(${state.panX} ${state.panY}) scale(${state.zoom})`);
   $('zoomLabel').textContent = Math.round(state.zoom*100)+'%';
+  renderChrome();
 }
-function render(){
+/* --- 定規とガイド（スクリーン座標で描画） --- */
+function renderChrome(){
+  const gl = $('guideLayer'), rl = $('rulerLayer');
+  gl.innerHTML = ''; rl.innerHTML = '';
+  if(!state.ruler) return;
+  const NS = 'http://www.w3.org/2000/svg';
+  const rc = stage.getBoundingClientRect();
+  const W = rc.width, H = rc.height, z = state.zoom;
+  const mk = (tag, attrs, parent)=>{
+    const el = document.createElementNS(NS, tag);
+    for(const k in attrs) el.setAttribute(k, attrs[k]);
+    parent.appendChild(el);
+    return el;
+  };
+  // ガイド線
+  state.guides.v.forEach((g,i)=>{
+    const x = state.panX + g*z;
+    mk('line',{x1:x,y1:0,x2:x,y2:H,stroke:'#3aa0ff','stroke-width':1,'pointer-events':'none'},gl);
+    const hit = mk('line',{x1:x,y1:0,x2:x,y2:H,stroke:'transparent','stroke-width':7},gl);
+    hit.dataset.guide = 'v:'+i; hit.style.cursor = 'ew-resize';
+  });
+  state.guides.h.forEach((g,i)=>{
+    const y = state.panY + g*z;
+    mk('line',{x1:0,y1:y,x2:W,y2:y,stroke:'#3aa0ff','stroke-width':1,'pointer-events':'none'},gl);
+    const hit = mk('line',{x1:0,y1:y,x2:W,y2:y,stroke:'transparent','stroke-width':7},gl);
+    hit.dataset.guide = 'h:'+i; hit.style.cursor = 'ns-resize';
+  });
+  // 定規の背景
+  mk('rect',{x:0,y:0,width:W,height:20,fill:'#1f2127'},rl);
+  mk('rect',{x:0,y:0,width:20,height:H,fill:'#1f2127'},rl);
+  // 目盛り間隔（画面上でおよそ60pxになる切りのよい値）
+  const target = 60/z;
+  const pow = Math.pow(10, Math.floor(Math.log10(target)));
+  const m = target/pow;
+  const step = (m<1.5 ? 1 : m<3.5 ? 2 : m<7.5 ? 5 : 10)*pow;
+  let d = '';
+  const x0 = Math.floor(((20-state.panX)/z)/step)*step;
+  for(let x=x0; state.panX+x*z<=W; x+=step){
+    const sx = state.panX + x*z;
+    if(sx < 20) continue;
+    d += `M ${fmt(sx)} 13 V 20 `;
+    const t = mk('text',{x:sx+3,y:10,'font-size':9,fill:'#8b909b'},rl);
+    t.textContent = fmt(x);
+  }
+  const y0 = Math.floor(((20-state.panY)/z)/step)*step;
+  for(let y=y0; state.panY+y*z<=H; y+=step){
+    const sy = state.panY + y*z;
+    if(sy < 20) continue;
+    d += `M 13 ${fmt(sy)} H 20 `;
+    const t = mk('text',{x:11,y:sy-3,'font-size':9,fill:'#8b909b',transform:`rotate(-90 11 ${fmt(sy-3)})`},rl);
+    t.textContent = fmt(y);
+  }
+  mk('path',{d, stroke:'#5a5f6b','stroke-width':1, fill:'none'},rl);
+  mk('rect',{x:0,y:0,width:20,height:20,fill:'#25272e'},rl);
+  mk('line',{x1:0,y1:20,x2:W,y2:20,stroke:'#2e313a','stroke-width':1},rl);
+  mk('line',{x1:20,y1:0,x2:20,y2:H,stroke:'#2e313a','stroke-width':1},rl);
+}
+function render(skipProps){
   const d = state.doc;
   const ab = $('artboard');
   ab.setAttribute('width',d.w); ab.setAttribute('height',d.h); ab.setAttribute('fill',d.bg==='none'?'#ffffff':d.bg);
@@ -412,19 +610,41 @@ function render(){
   $('gridpat').setAttribute('height',state.gridSize);
   $('gridpath').setAttribute('d',`M ${state.gridSize} 0 L 0 0 0 ${state.gridSize}`);
 
+  ensureLayers();
+  normalizeOrder();
+  updateGradientDefs();
   shapesLayer.innerHTML = '';
-  state.shapes.forEach(s=>{ if(s.visible) shapesLayer.appendChild(shapeEl(s,true)); });
+  state.shapes.forEach(s=>{ if(shapeVisible(s)) shapesLayer.appendChild(shapeEl(s,true)); });
 
   renderHandles();
   renderLayers();
-  renderProps();
+  if(!skipProps) renderProps();
   updateWorld();
+  autosave();
 }
 
 /* --- 選択ハンドル --- */
+function renderNodeHandles(){
+  const ss = selShapes();
+  if(ss.length !== 1) return;
+  const s = ss[0];
+  let pts;
+  if(s.type==='path') pts = s.pts;
+  else if(s.type==='line') pts = [{x:s.x1,y:s.y1},{x:s.x2,y:s.y2}];
+  else return;
+  const NS = 'http://www.w3.org/2000/svg', z = state.zoom;
+  pts.forEach((pt,i)=>{
+    const c = document.createElementNS(NS,'circle');
+    c.setAttribute('cx',pt.x); c.setAttribute('cy',pt.y); c.setAttribute('r',4.5/z);
+    c.setAttribute('fill','#fff'); c.setAttribute('stroke','#d24a35'); c.setAttribute('stroke-width',1.2/z);
+    c.dataset.node = i; c.style.cursor = 'move';
+    handleLayer.appendChild(c);
+  });
+}
 function renderHandles(){
   handleLayer.innerHTML = '';
   overlayRenderPen();
+  if(state.tool==='node'){ renderNodeHandles(); return; }
   const b = selBBox();
   if(!b || drag && drag.mode==='marquee') { if(!b) return; }
   const NS='http://www.w3.org/2000/svg';
@@ -500,6 +720,7 @@ function overlayRenderPen(){
 /* ================= ツールバー ================= */
 const TOOLS = [
   ['select','選択 (V)', '<path d="M5 3 L5 15 L9 12 L11.5 17 L13.5 16 L11 11 L16 11 Z"/>'],
+  ['node','ノード編集 (A)', '<path d="M4 16 L10 4 L16 16"/><circle cx="4" cy="16" r="1.8"/><circle cx="10" cy="4" r="1.8"/><circle cx="16" cy="16" r="1.8"/>'],
   ['rect','長方形 (R)', '<rect x="3.5" y="5" width="13" height="10" rx="1"/>'],
   ['ellipse','楕円 (E)', '<ellipse cx="10" cy="10" rx="6.5" ry="5"/>'],
   ['line','直線 (L)', '<line x1="4" y1="15" x2="16" y2="5"/>'],
@@ -508,6 +729,7 @@ const TOOLS = [
   ['pen','ペン (N)', '<path d="M4 16 L13 4 L16 6.5 L7 16 Z"/><circle cx="14.5" cy="5.2" r="1.4"/>'],
   ['pencil','鉛筆 (B)', '<path d="M4 16 C 6 10, 9 14, 11 8 S 15 6, 16 4"/>'],
   ['text','テキスト (T)', '<path d="M5 5 L15 5 M10 5 L10 16"/>'],
+  ['picker','スポイト (I)', '<path d="M12.5 3.5 L16.5 7.5 L8 16 H4 V12 Z"/><path d="M11 6 L14 9"/>'],
   ['hand','手のひら (H)', '<path d="M7 10 V5.5 a1.2 1.2 0 0 1 2.4 0 V9 M9.4 9 V4.5 a1.2 1.2 0 0 1 2.4 0 V9 M11.8 9 V5.5 a1.2 1.2 0 0 1 2.4 0 V11 c0 3-1.5 5.5-4.5 5.5 c-2.5 0-3.6-1.4-4.8-3.8 L6.4 9.5 a1.1 1.1 0 0 1 2 -.4 L7 10"/>'],
 ];
 const HINTS = {
@@ -517,6 +739,8 @@ const HINTS = {
   star:'ドラッグで星形を描画', pen:'クリックで点を追加／始点クリックで閉じる／Enterで確定／Escで取消',
   pencil:'ドラッグでフリーハンド描画', text:'クリックした位置に文字を配置（ダブルクリックで再編集）',
   hand:'ドラッグで画面を移動（Spaceキーでも一時切替）',
+  node:'パス・直線を選択して点をドラッグ／選択中のパスの線上クリックで点追加／点をダブルクリックまたはAlt+クリックで削除',
+  picker:'図形をクリックしてスタイルを取得（他の図形を選択中ならそのスタイルを適用）',
 };
 function buildToolbar(){
   const tb = $('toolbar');
@@ -532,7 +756,7 @@ function setTool(t){
   if(pen) finishPen(false);
   state.tool = t;
   document.querySelectorAll('.tbtn').forEach(b=>b.classList.toggle('active', b.dataset.tool===t));
-  stage.className = 'tool-'+t;
+  stage.setAttribute('class', 'tool-'+t);
   $('hint').textContent = HINTS[t] || '';
 }
 
@@ -547,6 +771,72 @@ stage.addEventListener('pointerdown', e=>{
   if(e.button!==0) return;
   const p = toWorld(e);
   const t = state.tool;
+
+  // ガイドのドラッグ／定規からの新規ガイド作成
+  if(state.ruler){
+    if(e.target.dataset && e.target.dataset.guide){
+      const [axis, idx] = e.target.dataset.guide.split(':');
+      drag = {mode:'guide', axis, i:+idx};
+      stage.setPointerCapture(e.pointerId);
+      return;
+    }
+    const rc = stage.getBoundingClientRect();
+    const sx = e.clientX - rc.left, sy = e.clientY - rc.top;
+    if(sx < 20 && sy >= 20){
+      state.guides.v.push((sx - state.panX)/state.zoom);
+      drag = {mode:'guide', axis:'v', i:state.guides.v.length-1};
+      stage.setPointerCapture(e.pointerId); renderChrome(); return;
+    }
+    if(sy < 20 && sx >= 20){
+      state.guides.h.push((sy - state.panY)/state.zoom);
+      drag = {mode:'guide', axis:'h', i:state.guides.h.length-1};
+      stage.setPointerCapture(e.pointerId); renderChrome(); return;
+    }
+  }
+
+  if(t==='node'){
+    if(e.target.dataset && e.target.dataset.node !== undefined){
+      const s = selShapes()[0];
+      if(!s) return;
+      if(e.altKey && s.type==='path' && s.pts.length > 2){
+        pushHistory();
+        s.pts.splice(+e.target.dataset.node, 1);
+        render();
+        return;
+      }
+      pushHistory();
+      drag = {mode:'node', s, i:+e.target.dataset.node, moved:false};
+      stage.setPointerCapture(e.pointerId);
+      return;
+    }
+    const idAttr = e.target.dataset ? e.target.dataset.id : null;
+    if(idAttr){
+      const s = state.shapes.find(x=>x.id===+idAttr);
+      if(s && state.sel.has(s.id) && s.type==='path'){
+        pushHistory();
+        const i = nearestSegment(s.pts, p, s.closed);
+        s.pts.splice(i+1, 0, {x:p.x, y:p.y});
+        drag = {mode:'node', s, i:i+1};
+        render();
+        stage.setPointerCapture(e.pointerId);
+      }else if(s && (s.type==='path' || s.type==='line')){
+        state.sel = new Set([s.id]);
+        render();
+      }
+      return;
+    }
+    state.sel.clear(); render();
+    return;
+  }
+
+  if(t==='picker'){
+    const idAttr = e.target.dataset ? e.target.dataset.id : null;
+    if(idAttr){
+      const src = state.shapes.find(x=>x.id===+idAttr);
+      if(src) applyStyleFrom(src);
+    }
+    return;
+  }
 
   if(t==='select'){
     const hEl = e.target.closest ? e.target : null;
@@ -564,12 +854,16 @@ stage.addEventListener('pointerdown', e=>{
       if(idAttr){
         const id = +idAttr;
         if(e.shiftKey){
-          state.sel.has(id) ? state.sel.delete(id) : state.sel.add(id);
+          const s0 = state.shapes.find(x=>x.id===id);
+          const members = s0 && s0.groupId ? state.shapes.filter(x=>x.groupId===s0.groupId).map(x=>x.id) : [id];
+          const has = state.sel.has(id);
+          members.forEach(m=> has ? state.sel.delete(m) : state.sel.add(m));
         }else if(!state.sel.has(id)){
           state.sel = new Set([id]);
+          expandSelToGroups();
         }
         pushHistory();
-        drag = {mode:'move', start:p, orig:JSON.stringify(selShapes()), moved:false};
+        drag = {mode:'move', start:p, orig:JSON.stringify(selShapes()), moved:false, ob0:selBBox()};
         syncStyleFromSel();
         render();
       }else{
@@ -584,7 +878,7 @@ stage.addEventListener('pointerdown', e=>{
 
   if(t==='rect'||t==='ellipse'||t==='line'||t==='poly'||t==='star'){
     pushHistory();
-    const x = sn(p.x), y = sn(p.y);
+    const x = snapX(p.x), y = snapY(p.y);
     let s;
     if(t==='rect') s = newShape('rect',{x,y,w:0,h:0,rx:0});
     if(t==='ellipse') s = newShape('ellipse',{cx:x,cy:y,rx:0,ry:0});
@@ -611,7 +905,7 @@ stage.addEventListener('pointerdown', e=>{
   }
 
   if(t==='pen'){
-    const pt = {x:sn(p.x), y:sn(p.y)};
+    const pt = {x:snapX(p.x), y:snapY(p.y)};
     if(!pen){ pen = {pts:[pt], cur:null}; }
     else{
       if(pen.pts.length>=3 && dist(pt,pen.pts[0]) < 10/state.zoom){ finishPen(true); render(); return; }
@@ -623,7 +917,7 @@ stage.addEventListener('pointerdown', e=>{
 
   if(t==='text'){
     pushHistory();
-    const s = newShape('text',{x:sn(p.x), y:sn(p.y), text:'テキスト', size:32, font:'sans-serif', bold:false, stroke:'none', fill:'#222222'});
+    const s = newShape('text',{x:snapX(p.x), y:snapY(p.y), text:'テキスト', size:32, font:'sans-serif', bold:false, stroke:'none', fill:'#222222'});
     state.shapes.push(s);
     state.sel = new Set([s.id]);
     render();
@@ -635,7 +929,7 @@ stage.addEventListener('pointerdown', e=>{
 window.addEventListener('pointermove', e=>{
   const p = toWorld(e);
   $('coords').textContent = `x: ${fmt(p.x)}, y: ${fmt(p.y)}`;
-  if(pen){ pen.cur = {x:sn(p.x), y:sn(p.y)}; overlayRenderPen(); }
+  if(pen){ pen.cur = {x:snapX(p.x), y:snapY(p.y)}; overlayRenderPen(); }
   if(!drag) return;
 
   if(drag.mode==='pan'){
@@ -650,16 +944,45 @@ window.addEventListener('pointermove', e=>{
     const x2=Math.max(drag.start.x,p.x), y2=Math.max(drag.start.y,p.y);
     state.sel = new Set(drag.keep);
     state.shapes.forEach(s=>{
-      if(!s.visible || s.locked) return;
+      if(!shapeVisible(s) || shapeLocked(s)) return;
       const b = renderBBox(s);
       if(b.x < x2 && b.x+b.w > x1 && b.y < y2 && b.y+b.h > y1) state.sel.add(s.id);
     });
+    expandSelToGroups();
+    render();
+    return;
+  }
+  if(drag.mode==='guide'){
+    const rc = stage.getBoundingClientRect();
+    if(drag.axis==='v') state.guides.v[drag.i] = (e.clientX - rc.left - state.panX)/state.zoom;
+    else state.guides.h[drag.i] = (e.clientY - rc.top - state.panY)/state.zoom;
+    renderChrome();
+    return;
+  }
+  if(drag.mode==='node'){
+    const s = drag.s;
+    const nx = snapX(p.x), ny = snapY(p.y);
+    drag.moved = true;
+    if(s.type==='line'){ if(drag.i===0){ s.x1=nx; s.y1=ny; } else { s.x2=nx; s.y2=ny; } }
+    else if(s.pts && s.pts[drag.i]) s.pts[drag.i] = {x:nx, y:ny};
     render();
     return;
   }
   if(drag.mode==='move'){
     let dx = p.x - drag.start.x, dy = p.y - drag.start.y;
     if(state.snap){ dx = Math.round(dx/state.gridSize)*state.gridSize; dy = Math.round(dy/state.gridSize)*state.gridSize; }
+    if(state.ruler && drag.ob0 && (state.guides.v.length || state.guides.h.length)){
+      const thr = 6/state.zoom, b = drag.ob0;
+      let ax = Infinity, ay = Infinity;
+      [b.x+dx, b.x+b.w/2+dx, b.x+b.w+dx].forEach(edge=>{
+        state.guides.v.forEach(g=>{ const d = g-edge; if(Math.abs(d)<thr && Math.abs(d)<Math.abs(ax)) ax = d; });
+      });
+      [b.y+dy, b.y+b.h/2+dy, b.y+b.h+dy].forEach(edge=>{
+        state.guides.h.forEach(g=>{ const d = g-edge; if(Math.abs(d)<thr && Math.abs(d)<Math.abs(ay)) ay = d; });
+      });
+      if(isFinite(ax)) dx += ax;
+      if(isFinite(ay)) dy += ay;
+    }
     if(Math.abs(dx)>0.5||Math.abs(dy)>0.5) drag.moved = true;
     const orig = JSON.parse(drag.orig);
     selShapes().forEach((s,i)=> translateShape(s, orig[i], dx, dy));
@@ -668,7 +991,7 @@ window.addEventListener('pointermove', e=>{
   }
   if(drag.mode==='create'){
     const s = drag.s, st = drag.start;
-    let x = sn(p.x), y = sn(p.y);
+    let x = snapX(p.x), y = snapY(p.y);
     if(s.type==='rect'){
       let w = x-st.x, h = y-st.y;
       if(e.shiftKey){ const m=Math.max(Math.abs(w),Math.abs(h)); w=Math.sign(w||1)*m; h=Math.sign(h||1)*m; }
@@ -706,10 +1029,10 @@ window.addEventListener('pointermove', e=>{
     const ob = drag.ob;
     let nb = {x:ob.x, y:ob.y, w:ob.w, h:ob.h};
     const h = drag.handle;
-    if(h.includes('e')) nb.w = Math.max(1, sn(p.x) - ob.x);
-    if(h.includes('s')) nb.h = Math.max(1, sn(p.y) - ob.y);
-    if(h.includes('w')){ const nx = Math.min(sn(p.x), ob.x+ob.w-1); nb.w = ob.x+ob.w-nx; nb.x = nx; }
-    if(h.includes('n')){ const ny = Math.min(sn(p.y), ob.y+ob.h-1); nb.h = ob.y+ob.h-ny; nb.y = ny; }
+    if(h.includes('e')) nb.w = Math.max(1, snapX(p.x) - ob.x);
+    if(h.includes('s')) nb.h = Math.max(1, snapY(p.y) - ob.y);
+    if(h.includes('w')){ const nx = Math.min(snapX(p.x), ob.x+ob.w-1); nb.w = ob.x+ob.w-nx; nb.x = nx; }
+    if(h.includes('n')){ const ny = Math.min(snapY(p.y), ob.y+ob.h-1); nb.h = ob.y+ob.h-ny; nb.y = ny; }
     if(e.shiftKey && h.length===2){
       const k = Math.max(nb.w/ob.w, nb.h/ob.h);
       const nw = ob.w*k, nh = ob.h*k;
@@ -735,6 +1058,21 @@ window.addEventListener('pointermove', e=>{
 window.addEventListener('pointerup', e=>{
   if(!drag) return;
   if(drag.mode==='pan') stage.classList.remove('panning');
+  if(drag.mode==='node' && !drag.moved){
+    // 動かしていないノードクリック: 履歴を破棄し、DOMを保持してdblclick（削除）を成立させる
+    undoStack.pop();
+    drag = null;
+    return;
+  }
+  if(drag.mode==='guide'){
+    const rc = stage.getBoundingClientRect();
+    const sx = e.clientX - rc.left, sy = e.clientY - rc.top;
+    if(drag.axis==='v' ? sx < 20 : sy < 20){
+      (drag.axis==='v' ? state.guides.v : state.guides.h).splice(drag.i, 1);
+    }
+    renderChrome();
+    autosave();
+  }
   if(drag.mode==='create'){
     const s = drag.s, b = geomBBox(s);
     if(b.w < 2 && b.h < 2){
@@ -761,13 +1099,25 @@ window.addEventListener('pointerup', e=>{
     // 動かさなかった場合：Shiftなしクリックで単独選択に絞る
     undoStack.pop(); // 無変更の履歴を破棄
     const idAttr = e.target.dataset ? e.target.dataset.id : null;
-    if(idAttr && !e.shiftKey){ state.sel = new Set([+idAttr]); render(); }
+    if(idAttr && !e.shiftKey){ state.sel = new Set([+idAttr]); expandSelToGroups(); render(); }
   }
   drag = null;
   renderHandles();
 });
 
 stage.addEventListener('dblclick', e=>{
+  if(state.tool==='node'){
+    // pointer captureでtargetがstageになるため、座標から最寄りのノードを探す
+    const s = selShapes()[0];
+    if(s && s.type==='path' && s.pts.length > 2){
+      const p = toWorld(e);
+      const thr = 8/state.zoom;
+      let bi = -1, bd = Infinity;
+      s.pts.forEach((pt,i)=>{ const d = Math.hypot(pt.x-p.x, pt.y-p.y); if(d < bd){ bd = d; bi = i; } });
+      if(bi >= 0 && bd < thr){ pushHistory(); s.pts.splice(bi, 1); render(); }
+    }
+    return;
+  }
   const idAttr = e.target.dataset ? e.target.dataset.id : null;
   if(idAttr){
     const s = state.shapes.find(x=>x.id===+idAttr);
@@ -815,6 +1165,7 @@ function translateShape(s, o, dx, dy){
     case 'poly': s.cx=o.cx+dx; s.cy=o.cy+dy; break;
     case 'path': s.pts=o.pts.map(p=>({x:p.x+dx, y:p.y+dy})); break;
     case 'text': s.x=o.x+dx; s.y=o.y+dy; break;
+    case 'image': s.x=o.x+dx; s.y=o.y+dy; break;
   }
 }
 function bboxTransform(s, o, ob, nb){
@@ -828,6 +1179,7 @@ function bboxTransform(s, o, ob, nb){
     case 'poly': s.cx=mx(o.cx); s.cy=my(o.cy); s.r=o.r*(sx+sy)/2; break;
     case 'path': s.pts=o.pts.map(p=>({x:mx(p.x), y:my(p.y)})); break;
     case 'text': s.x=mx(o.x); s.y=my(o.y); s.size=Math.max(4, o.size*sy); break;
+    case 'image': s.x=mx(o.x); s.y=my(o.y); s.w=o.w*sx; s.h=o.h*sy; break;
   }
 }
 
@@ -878,6 +1230,70 @@ function colorIn(id,label,val){
     <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
     <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`);
 }
+/* 色ピッカー＋CMYK 数値入力 */
+function colorInCMYK(id,label,val){
+  const none = val==='none';
+  const cm = none ? {c:0,m:0,y:0,k:0} : rgbToCmyk(hexToRgb(val).r, hexToRgb(val).g, hexToRgb(val).b);
+  const dis = none ? 'disabled' : '';
+  return propRow(`<label>${label}</label>
+    <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
+    <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`)
+    + `<div class="prow cmykrow">
+      <span class="cmyklab">C</span><input type="number" id="${id}C" min="0" max="100" value="${cm.c}" ${dis}>
+      <span class="cmyklab">M</span><input type="number" id="${id}M" min="0" max="100" value="${cm.m}" ${dis}>
+      <span class="cmyklab">Y</span><input type="number" id="${id}Y" min="0" max="100" value="${cm.y}" ${dis}>
+      <span class="cmyklab">K</span><input type="number" id="${id}K" min="0" max="100" value="${cm.k}" ${dis}>
+    </div>`;
+}
+function fillTypeOf(v){ return (v && typeof v==='object') ? v.type : 'solid'; }
+function fillPanel(one){
+  const v = one.fill;
+  const type = fillTypeOf(v);
+  let html = `<div class="prow"><label>塗り</label><select id="pFillType">
+      <option value="solid" ${type==='solid'?'selected':''}>単色</option>
+      <option value="linear" ${type==='linear'?'selected':''}>線形グラデーション</option>
+      <option value="radial" ${type==='radial'?'selected':''}>放射グラデーション</option>
+    </select></div>`;
+  if(type==='solid'){
+    html += colorInCMYK('pFill','　', v);
+  }else{
+    const stops = v.stops || [{offset:0,color:'#d8d1c2'},{offset:1,color:'#33312e'}];
+    html += propRow(`<label>色1</label><input type="color" id="pGrad0" value="${stops[0].color}">
+      <label>色2</label><input type="color" id="pGrad1" value="${stops[1].color}">`);
+    if(type==='linear'){
+      html += propRow(`<label>角度</label><input type="range" id="pGradAngle" min="0" max="360" value="${v.angle||0}" style="flex:1"><span id="pGradAngleVal">${v.angle||0}°</span>`);
+    }
+  }
+  return html;
+}
+function bindFillPanel(one){
+  const pft = $('pFillType');
+  pft.onchange = ()=>{
+    pushHistory();
+    const t = pft.value;
+    if(t==='solid'){
+      const cur = one.fill;
+      one.fill = (cur && cur.stops && cur.stops[0]) ? cur.stops[0].color : (typeof cur==='string' ? cur : '#d8d1c2');
+    }else{
+      const cur = one.fill;
+      const baseStops = (cur && cur.stops) ? cur.stops.map(s=>({...s})) :
+        [{offset:0, color:(typeof cur==='string' && cur!=='none') ? cur : '#d8d1c2'}, {offset:1, color:'#33312e'}];
+      one.fill = {type:t, stops:baseStops, angle:(cur && cur.angle) || 0};
+    }
+    render();
+  };
+  if(fillTypeOf(one.fill)==='solid'){
+    bindColorCMYK('pFill','fill');
+  }else{
+    const pg0 = $('pGrad0'), pg1 = $('pGrad1'), pga = $('pGradAngle');
+    pg0.oninput = ()=>{ pushHistory(); one.fill.stops[0].color = pg0.value; render(); };
+    pg1.oninput = ()=>{ pushHistory(); one.fill.stops[1].color = pg1.value; render(); };
+    if(pga){
+      pga.oninput = ()=>{ one.fill.angle = +pga.value; $('pGradAngleVal').textContent = pga.value+'°'; updateGradientDefs(); };
+      pga.onchange = ()=>{ pushHistory(); render(); };
+    }
+  }
+}
 
 function renderProps(){
   const el = $('props');
@@ -889,8 +1305,9 @@ function renderProps(){
       propRow(`<label>背景</label><input type="color" id="docBg" value="${state.doc.bg==='none'?'#ffffff':state.doc.bg}">`) +
       numIn('gridSize','格子',state.gridSize) +
       `<div class="pgroup" style="color:var(--muted); font-size:11px; line-height:1.7">
-        ショートカット: V選択 R矩形 E楕円 L線 P多角形 S星 Nペン B鉛筆 Tテキスト H手のひら<br>
-        Ctrl+Z 戻す / Ctrl+C→V 複製 / Del 削除 / 矢印キー 移動 / Ctrl+ホイール ズーム</div>`;
+        ショートカット: V選択 Aノード R矩形 E楕円 L線 P多角形 S星 Nペン B鉛筆 Tテキスト Iスポイト H手のひら<br>
+        Ctrl+Z 戻す / Ctrl+C→V コピー&貼り付け / Ctrl+G グループ化 / Del 削除 / 矢印キー 移動 / Ctrl+ホイール ズーム<br>
+        定規の目盛りからドラッグでガイド線を作成（定規へ戻すと削除）</div>`;
     bind('docW', v=>{state.doc.w=+v;}); bind('docH', v=>{state.doc.h=+v;});
     bind('docBg', v=>{state.doc.bg=v;}); bind('gridSize', v=>{state.gridSize=Math.max(2,+v);});
     return;
@@ -907,9 +1324,23 @@ function renderProps(){
   if(one) html += numIn('pRot','回転',one.rotation||0);
   html += propRow(`<label>不透明</label><input type="range" id="pOp" min="0" max="1" step="0.05" value="${one?one.opacity:1}" style="flex:1">`);
   const isLine = one && one.type==='line';
-  if(!isLine) html += colorIn('pFill','塗り', one ? one.fill : styleNow.fill);
-  html += colorIn('pStroke','線', one ? one.stroke : styleNow.stroke);
-  html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
+  const isImage = one && one.type==='image';
+  if(!isLine && !isImage){
+    html += one ? fillPanel(one) : colorInCMYK('pFill','塗り', styleNow.fill);
+  }
+  if(!isImage){
+    html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke);
+    html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
+    if(one){
+      const canArrow = one.type==='line' || (one.type==='path' && !one.closed);
+      html += propRow(`<label>線種</label><select id="pDash">
+        <option value="solid" ${!one.dash||one.dash==='solid'?'selected':''}>実線</option>
+        <option value="dash" ${one.dash==='dash'?'selected':''}>破線</option>
+        <option value="dot" ${one.dash==='dot'?'selected':''}>点線</option></select>` +
+        (canArrow ? `<label class="toggle"><input type="checkbox" id="pArrS" ${one.arrowS?'checked':''}>←始</label>
+         <label class="toggle"><input type="checkbox" id="pArrE" ${one.arrowE?'checked':''}>終→</label>` : ''));
+    }
+  }
 
   if(one){
     if(one.type==='rect') html += `<div class="pgroup">` + numIn('pRx','角丸',one.rx||0) + `</div>`;
@@ -937,12 +1368,15 @@ function renderProps(){
   html += `<div class="pgroup"><div class="prow"><label>整列</label><span class="minibtns">
     <button data-al="l" title="左揃え">⇤</button><button data-al="cx" title="左右中央">↔</button><button data-al="r" title="右揃え">⇥</button>
     <button data-al="t" title="上揃え">⤒</button><button data-al="cy" title="上下中央">↕</button><button data-al="b" title="下揃え">⤓</button>
+    <button data-al="dh" title="左右に等間隔で分布（3つ以上選択時）">横等分</button>
+    <button data-al="dv" title="上下に等間隔で分布（3つ以上選択時）">縦等分</button>
     </span></div>
     <div class="prow"><label>重ね順</label><span class="minibtns">
     <button data-z="front">最前面</button><button data-z="up">前へ</button>
     <button data-z="down">後へ</button><button data-z="back">最背面</button></span></div>
     <div class="prow"><span class="minibtns">
-    <button id="pDup">複製</button><button id="pDel">削除</button></span></div></div>`;
+    <button id="pDup">複製</button><button id="pDel">削除</button>
+    <button id="pGroup" title="Ctrl+G">グループ化</button><button id="pUngroup" title="Ctrl+Shift+G">解除</button></span></div></div>`;
 
   el.innerHTML = html;
 
@@ -970,6 +1404,9 @@ function renderProps(){
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
     const psm = $('pSmooth'); if(psm) psm.onchange = ()=>{ startEdit(); one.smooth = psm.checked; render(); };
     const pcl = $('pClosed'); if(pcl) pcl.onchange = ()=>{ startEdit(); one.closed = pcl.checked; render(); };
+    const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); one.dash = pd.value; render(); };
+    const pas = $('pArrS'); if(pas) pas.onchange = ()=>{ startEdit(); one.arrowS = pas.checked; render(); };
+    const pae = $('pArrE'); if(pae) pae.onchange = ()=>{ startEdit(); one.arrowE = pae.checked; render(); };
   }
   const op = $('pOp');
   op.oninput = ()=>{ selShapes().forEach(s=>s.opacity=+op.value); styleNow.opacity=+op.value;
@@ -979,32 +1416,71 @@ function renderProps(){
     }); };
   op.onchange = ()=>{ pushHistory(); render(); };
 
-  const bindColor = (base, key)=>{
-    const c = $(base), n = $(base+'None');
-    if(!c) return;
-    c.oninput = ()=>{ pushHistory(); selShapes().forEach(s=>s[key]=c.value); styleNow[key]=c.value; render(); };
-    n.onchange = ()=>{ pushHistory();
-      const v = n.checked ? 'none' : c.value;
-      selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
-  };
-  bindColor('pFill','fill');
-  bindColor('pStroke','stroke');
-  bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
+  if(!isImage){
+    if(one) bindFillPanel(one); else bindColorCMYK('pFill','fill');
+    bindColorCMYK('pStroke','stroke');
+    bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
+  }
 
   el.querySelectorAll('[data-al]').forEach(btn=> btn.onclick = ()=> align(btn.dataset.al));
   el.querySelectorAll('[data-z]').forEach(btn=> btn.onclick = ()=> reorder(btn.dataset.z));
   $('pDup').onclick = duplicateSel;
   $('pDel').onclick = deleteSel;
+  $('pGroup').onclick = groupSel;
+  $('pUngroup').onclick = ungroupSel;
 }
 function bind(id, fn){
   const input = $(id); if(!input) return;
   input.onchange = ()=>{ fn(input.value); render(); };
+}
+function bindColor(base, key){
+  const c = $(base), n = $(base+'None');
+  if(!c) return;
+  c.oninput = ()=>{ pushHistory(); selShapes().forEach(s=>s[key]=c.value); styleNow[key]=c.value; render(); };
+  n.onchange = ()=>{ pushHistory();
+    const v = n.checked ? 'none' : c.value;
+    selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
+}
+/* 色ピッカー＋CMYK を key に束縛 */
+function bindColorCMYK(base, key){
+  const c = $(base), n = $(base+'None');
+  if(!c) return;
+  // ピッカー・「なし」操作はパネルを再構築（CMYK欄も新しい色に追従）
+  const applyFull = v=>{ pushHistory(); selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
+  c.oninput = ()=> applyFull(c.value);
+  n.onchange = ()=> applyFull(n.checked ? 'none' : c.value);
+  // CMYK欄の編集はパネルを再構築せず、入力値をそのまま保持（RGB往復による値の揺れを防ぐ）
+  const cc=$(base+'C'), cm=$(base+'M'), cy=$(base+'Y'), ck=$(base+'K');
+  const fromCMYK = ()=>{
+    const hex = cmykToHex(+cc.value||0, +cm.value||0, +cy.value||0, +ck.value||0);
+    pushHistory();
+    selShapes().forEach(s=>s[key]=hex); styleNow[key]=hex;
+    c.value = hex;
+    render(true);
+  };
+  [cc,cm,cy,ck].forEach(inp=>{ if(inp) inp.onchange = fromCMYK; });
 }
 
 /* ================= 整列・重ね順 ================= */
 function align(mode){
   const ss = selShapes(); if(!ss.length) return;
   pushHistory();
+  if(mode==='dh' || mode==='dv'){
+    if(ss.length < 3){ undoStack.pop(); return; }
+    const horiz = mode==='dh';
+    const items = ss.map(s=>({s, b:renderBBox(s)}))
+      .sort((a,b)=> horiz ? (a.b.x+a.b.w/2)-(b.b.x+b.b.w/2) : (a.b.y+a.b.h/2)-(b.b.y+b.b.h/2));
+    const cAt = it => horiz ? it.b.x+it.b.w/2 : it.b.y+it.b.h/2;
+    const c0 = cAt(items[0]), c1 = cAt(items[items.length-1]);
+    const step = (c1-c0)/(items.length-1);
+    items.forEach((it,i)=>{
+      const d = c0 + step*i - cAt(it);
+      const o = JSON.parse(JSON.stringify(it.s));
+      translateShape(it.s, o, horiz?d:0, horiz?0:d);
+    });
+    render();
+    return;
+  }
   const ref = ss.length>1 ? selBBox() : {x:0, y:0, w:state.doc.w, h:state.doc.h};
   ss.forEach(s=>{
     const b = renderBBox(s), o = JSON.parse(JSON.stringify(s));
@@ -1047,15 +1523,22 @@ function deleteSel(){
   state.sel.clear();
   render();
 }
-function copySel(){ clipboard = JSON.parse(JSON.stringify(selShapes())); }
-function paste(){
-  if(!clipboard.length) return;
+function copySel(){
+  clipboard = JSON.parse(JSON.stringify(selShapes()));
+  if(clipboard.length && navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText('vector-koubou:'+JSON.stringify(clipboard)).catch(()=>{});
+  }
+}
+function paste(list){
+  const src = list || clipboard;
+  if(!src.length) return;
   pushHistory();
-  const ids = [];
-  clipboard.forEach(c=>{
+  const ids = [], gmap = {};
+  src.forEach(c=>{
     const s = JSON.parse(JSON.stringify(c));
     s.id = idSeq++;
-    s.name = s.name.replace(/ \d+$/,'') + ' ' + s.id;
+    if(s.groupId){ gmap[s.groupId] = gmap[s.groupId] || ('g'+(groupSeq++)); s.groupId = gmap[s.groupId]; }
+    s.name = String(s.name||'').replace(/ \d+$/,'') + ' ' + s.id;
     translateShape(s, JSON.parse(JSON.stringify(s)), 16, 16);
     state.shapes.push(s);
     ids.push(s.id);
@@ -1063,13 +1546,116 @@ function paste(){
   state.sel = new Set(ids);
   render();
 }
+function pasteShapesJSON(json){
+  try{
+    const arr = JSON.parse(json);
+    if(Array.isArray(arr) && arr.length) paste(arr);
+  }catch(err){ /* 不正なデータは無視 */ }
+}
 function duplicateSel(){ copySel(); paste(); }
+
+/* ---- グループ化 ---- */
+function groupSel(){
+  const ss = selShapes();
+  if(ss.length < 2) return;
+  pushHistory();
+  const gid = 'g'+(groupSeq++);
+  ss.forEach(s=> s.groupId = gid);
+  render();
+}
+function ungroupSel(){
+  const ss = selShapes().filter(s=>s.groupId);
+  if(!ss.length) return;
+  pushHistory();
+  ss.forEach(s=> delete s.groupId);
+  render();
+}
+function expandSelToGroups(){
+  const gids = new Set();
+  selShapes().forEach(s=>{ if(s.groupId) gids.add(s.groupId); });
+  if(!gids.size) return;
+  state.shapes.forEach(s=>{ if(s.groupId && gids.has(s.groupId)) state.sel.add(s.id); });
+}
+
+/* ---- ノード編集・スポイト用ヘルパー ---- */
+function distToSeg(p, a, b){
+  const dx = b.x-a.x, dy = b.y-a.y;
+  const L2 = dx*dx + dy*dy;
+  const t = L2 ? clamp(((p.x-a.x)*dx + (p.y-a.y)*dy)/L2, 0, 1) : 0;
+  return Math.hypot(p.x-(a.x+t*dx), p.y-(a.y+t*dy));
+}
+function nearestSegment(pts, p, closed){
+  let best = 0, bd = Infinity;
+  const n = closed ? pts.length : pts.length-1;
+  for(let i=0;i<n;i++){
+    const d = distToSeg(p, pts[i], pts[(i+1)%pts.length]);
+    if(d < bd){ bd = d; best = i; }
+  }
+  return best;
+}
+function applyStyleFrom(src){
+  const targets = selShapes().filter(s=>s.id!==src.id);
+  if(targets.length){
+    pushHistory();
+    targets.forEach(s=>{
+      if(s.type==='image'){ s.opacity = src.opacity; return; }
+      s.stroke = src.stroke; s.strokeWidth = src.strokeWidth;
+      s.opacity = src.opacity; s.dash = src.dash;
+      if(s.type!=='line' && src.type!=='line' && src.type!=='image' && src.fill!==undefined){
+        s.fill = (src.fill && typeof src.fill==='object') ? JSON.parse(JSON.stringify(src.fill)) : src.fill;
+      }
+    });
+  }
+  if(src.type!=='image'){
+    if(typeof src.fill==='string' && src.type!=='line') styleNow.fill = src.fill;
+    styleNow.stroke = src.stroke; styleNow.strokeWidth = src.strokeWidth; styleNow.opacity = src.opacity;
+  }
+  render();
+  $('hint').textContent = src.name + ' のスタイルを' + (targets.length ? '選択中の図形に適用しました' : '取得しました');
+}
 function syncStyleFromSel(){
   const s = selShapes()[0];
   if(!s) return;
-  if(s.type!=='line') styleNow.fill = s.fill;
+  if(s.type!=='line' && typeof s.fill==='string') styleNow.fill = s.fill;
   styleNow.stroke = s.stroke; styleNow.strokeWidth = s.strokeWidth; styleNow.opacity = s.opacity;
 }
+
+/* ================= 上位レイヤー操作 ================= */
+function addLayer(){
+  pushHistory();
+  const l = newLayer();
+  const idx = state.layers.findIndex(x=>x.id===state.activeLayer);
+  state.layers.splice(idx<0 ? state.layers.length : idx+1, 0, l);
+  state.activeLayer = l.id;
+  render();
+}
+function deleteLayer(id){
+  if(state.layers.length <= 1){ alert('最後のレイヤーは削除できません。'); return; }
+  const l = state.layers.find(x=>x.id===id); if(!l) return;
+  const cnt = state.shapes.filter(s=>s.layerId===id).length;
+  if(cnt && !confirm(`レイヤー「${l.name}」内の${cnt}個のオブジェクトも削除されます。よろしいですか？`)) return;
+  pushHistory();
+  state.shapes = state.shapes.filter(s=>s.layerId!==id);
+  state.layers = state.layers.filter(x=>x.id!==id);
+  if(state.activeLayer===id) state.activeLayer = state.layers[state.layers.length-1].id;
+  pruneSel(); render();
+}
+function reorderLayer(id, dir){
+  const i = state.layers.findIndex(l=>l.id===id); if(i<0) return;
+  const j = dir==='up' ? i+1 : i-1;   // up = 前面へ（配列後方）
+  if(j<0 || j>=state.layers.length) return;
+  pushHistory();
+  [state.layers[i], state.layers[j]] = [state.layers[j], state.layers[i]];
+  render();
+}
+function moveSelToLayer(id){
+  const ss = selShapes(); if(!ss.length) return;
+  pushHistory();
+  ss.forEach(s=> s.layerId = id);
+  state.activeLayer = id;
+  render();
+}
+function toggleLayer(l, key){ pushHistory(); l[key] = !l[key]; render(); }
 
 /* ================= レイヤーパネル ================= */
 const IC = {
@@ -1079,46 +1665,93 @@ const IC = {
   up:'<svg viewBox="0 0 20 20"><path d="M10 15 V5 M6 9 L10 5 L14 9"/></svg>',
   down:'<svg viewBox="0 0 20 20"><path d="M10 5 V15 M6 11 L10 15 L14 11"/></svg>',
 };
+function nameEditor(span, cur, commitFn){
+  const input = document.createElement('input');
+  input.value = cur;
+  span.textContent=''; span.appendChild(input); input.focus(); input.select();
+  const done = ()=>{ commitFn(input.value); };
+  input.onblur = done;
+  input.onkeydown = ev=>{ ev.stopPropagation(); if(ev.key==='Enter') done(); if(ev.key==='Escape') render(); };
+}
+function shapeRow(s){
+  const row = document.createElement('div');
+  row.className = 'layer layerobj' + (state.sel.has(s.id) ? ' sel' : '');
+  row.innerHTML =
+    `<button class="lic ${s.visible?'':'off'}" data-a="vis" title="表示/非表示">${IC.eye}</button>` +
+    `<button class="lic ${s.locked?'':'off'}" data-a="lock" title="ロック">${s.locked?IC.lock:IC.unlock}</button>` +
+    `<span class="lname" title="ダブルクリックで名前変更">${esc(s.name)}${s.groupId ? ` <span style="color:var(--muted); font-size:10px">[${esc(String(s.groupId).toUpperCase())}]</span>` : ''}</span>` +
+    `<button class="lic" data-a="up" title="前面へ">${IC.up}</button>` +
+    `<button class="lic" data-a="down" title="背面へ">${IC.down}</button>`;
+  row.onclick = e=>{
+    const a = e.target.closest('[data-a]');
+    if(a){
+      const act = a.dataset.a;
+      if(act==='vis') toggleLayer(s, 'visible');
+      if(act==='lock') toggleLayer(s, 'locked');
+      if(act==='up'||act==='down'){ state.sel=new Set([s.id]); reorder(act); }
+      return;
+    }
+    if(e.shiftKey){ state.sel.has(s.id) ? state.sel.delete(s.id) : state.sel.add(s.id); }
+    else state.sel = new Set([s.id]);
+    state.activeLayer = s.layerId;
+    render();
+  };
+  row.querySelector('.lname').ondblclick = e=>{
+    e.stopPropagation();
+    nameEditor(e.currentTarget, s.name, v=>{ pushHistory(); s.name = v || s.name; render(); });
+  };
+  return row;
+}
 function renderLayers(){
   const el = $('layers');
+  ensureLayers();
   el.innerHTML = '';
-  [...state.shapes].reverse().forEach(s=>{
-    const row = document.createElement('div');
-    row.className = 'layer' + (state.sel.has(s.id) ? ' sel' : '');
-    row.innerHTML =
-      `<button class="lic ${s.visible?'':'off'}" data-a="vis" title="表示/非表示">${IC.eye}</button>` +
-      `<button class="lic ${s.locked?'':'off'}" data-a="lock" title="ロック">${s.locked?IC.lock:IC.unlock}</button>` +
-      `<span class="lname" title="ダブルクリックで名前変更">${esc(s.name)}</span>` +
-      `<button class="lic" data-a="up" title="前面へ">${IC.up}</button>` +
-      `<button class="lic" data-a="down" title="背面へ">${IC.down}</button>`;
-    row.onclick = e=>{
-      const a = e.target.closest('[data-a]');
+  // 前面のレイヤーを上に表示（配列を逆順で描画）
+  [...state.layers].reverse().forEach(layer=>{
+    const head = document.createElement('div');
+    head.className = 'layer layerhead' + (state.activeLayer===layer.id ? ' active' : '');
+    head.innerHTML =
+      `<button class="ltri" data-la="collapse" title="開閉">${layer.collapsed?'▸':'▾'}</button>` +
+      `<button class="lic ${layer.visible?'':'off'}" data-la="vis" title="表示/非表示">${IC.eye}</button>` +
+      `<button class="lic ${layer.locked?'':'off'}" data-la="lock" title="ロック">${layer.locked?IC.lock:IC.unlock}</button>` +
+      `<span class="lname" title="クリックで選択先に設定／ダブルクリックで名前変更">${esc(layer.name)}</span>` +
+      `<button class="lic" data-la="moveHere" title="選択中のオブジェクトをこのレイヤーへ移動">⇐</button>` +
+      `<button class="lic" data-la="up" title="前面へ">${IC.up}</button>` +
+      `<button class="lic" data-la="down" title="背面へ">${IC.down}</button>` +
+      `<button class="lic ldel" data-la="del" title="レイヤー削除">✕</button>`;
+    head.onclick = e=>{
+      const a = e.target.closest('[data-la]');
       if(a){
-        const act = a.dataset.a;
-        if(act==='vis'){ pushHistory(); s.visible=!s.visible; render(); }
-        if(act==='lock'){ pushHistory(); s.locked=!s.locked; render(); }
-        if(act==='up'||act==='down'){ state.sel=new Set([s.id]); reorder(act); }
+        const act = a.dataset.la;
+        if(act==='collapse'){ layer.collapsed = !layer.collapsed; render(); }
+        if(act==='vis') toggleLayer(layer, 'visible');
+        if(act==='lock') toggleLayer(layer, 'locked');
+        if(act==='moveHere') moveSelToLayer(layer.id);
+        if(act==='up') reorderLayer(layer.id, 'up');
+        if(act==='down') reorderLayer(layer.id, 'down');
+        if(act==='del') deleteLayer(layer.id);
         return;
       }
-      if(e.shiftKey){ state.sel.has(s.id) ? state.sel.delete(s.id) : state.sel.add(s.id); }
-      else state.sel = new Set([s.id]);
+      state.activeLayer = layer.id;
       render();
     };
-    row.querySelector('.lname').ondblclick = e=>{
+    head.querySelector('.lname').ondblclick = e=>{
       e.stopPropagation();
-      const span = e.target;
-      const input = document.createElement('input');
-      input.value = s.name;
-      span.textContent=''; span.appendChild(input); input.focus(); input.select();
-      const commit = ()=>{ pushHistory(); s.name = input.value || s.name; render(); };
-      input.onblur = commit;
-      input.onkeydown = ev=>{ ev.stopPropagation(); if(ev.key==='Enter') commit(); if(ev.key==='Escape') render(); };
+      nameEditor(e.currentTarget, layer.name, v=>{ pushHistory(); layer.name = v || layer.name; render(); });
     };
-    el.appendChild(row);
+    el.appendChild(head);
+    if(!layer.collapsed){
+      const inLayer = state.shapes.filter(s=>s.layerId===layer.id);
+      [...inLayer].reverse().forEach(s=> el.appendChild(shapeRow(s)));
+      if(!inLayer.length){
+        const empty = document.createElement('div');
+        empty.className = 'layer layerobj';
+        empty.style.cssText = 'color:var(--muted); cursor:default; font-size:11px;';
+        empty.textContent = '（空のレイヤー）';
+        el.appendChild(empty);
+      }
+    }
   });
-  if(!state.shapes.length){
-    el.innerHTML = '<div style="padding:14px 10px; color:var(--muted); line-height:1.7">まだ図形がありません。<br>左のツールでキャンバスに描画してください。</div>';
-  }
 }
 
 /* ================= 入出力 ================= */
@@ -1131,10 +1764,12 @@ function download(name, blob){
 }
 function buildSVGString(){
   const d = state.doc;
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" width="${d.w}" height="${d.h}" viewBox="0 0 ${d.w} ${d.h}">`;
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${d.w}" height="${d.h}" viewBox="0 0 ${d.w} ${d.h}">`;
+  const defs = dynamicDefStrings();
+  if(defs.length) out += '<defs>'+defs.join('')+'</defs>';
   if(d.bg && d.bg!=='none') out += `<rect width="${d.w}" height="${d.h}" fill="${d.bg}"/>`;
   const ser = new XMLSerializer();
-  state.shapes.forEach(s=>{ if(s.visible) out += ser.serializeToString(shapeEl(s,false)); });
+  state.shapes.forEach(s=>{ if(shapeVisible(s)) out += ser.serializeToString(shapeEl(s,false)); });
   out += '</svg>';
   return out;
 }
@@ -1142,25 +1777,70 @@ function fnameBase(){ return ($('fname').value || 'design').trim(); }
 function exportSVG(){
   download(fnameBase()+'.svg', new Blob([buildSVGString()], {type:'image/svg+xml'}));
 }
-function exportPNG(){
+function rasterize(scale, forceOpaque, cb){
   const svg = buildSVGString();
   const url = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
   const img = new Image();
   img.onload = ()=>{
-    const scale = 2;
     const c = document.createElement('canvas');
     c.width = state.doc.w*scale; c.height = state.doc.h*scale;
     const ctx = c.getContext('2d');
+    if(forceOpaque){ ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,c.width,c.height); }
     ctx.scale(scale, scale);
     ctx.drawImage(img, 0, 0);
     URL.revokeObjectURL(url);
-    c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png');
+    cb(c);
   };
+  img.onerror = ()=>{ URL.revokeObjectURL(url); alert('書き出しに失敗しました。'); };
   img.src = url;
+}
+function exportPNG(){
+  rasterize(2, false, c=> c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png'));
+}
+function exportJPEG(){
+  rasterize(2, true, c=> c.toBlob(b=> download(fnameBase()+'.jpg', b), 'image/jpeg', 0.92));
+}
+function exportPDF(){
+  rasterize(2, true, c=> c.toBlob(b=>{
+    b.arrayBuffer().then(buf=> buildPDF(new Uint8Array(buf), c.width, c.height));
+  }, 'image/jpeg', 0.92));
+}
+function buildPDF(jpegBytes, wPx, hPx){
+  const enc = new TextEncoder();
+  const parts = [];
+  let offset = 0;
+  const offsets = [0];
+  function addPart(data){
+    const bytes = typeof data==='string' ? enc.encode(data) : data;
+    parts.push(bytes);
+    offset += bytes.length;
+  }
+  function beginObj(num){ offsets[num]=offset; addPart(num+' 0 obj\n'); }
+
+  addPart('%PDF-1.4\n');
+  beginObj(1); addPart('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
+  beginObj(2); addPart('<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
+  const wPt = fmt(wPx*72/96), hPt = fmt(hPx*72/96);
+  beginObj(3); addPart(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`);
+  beginObj(4);
+  addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
+  addPart(jpegBytes);
+  addPart('\nendstream\nendobj\n');
+  const content = `q ${wPt} 0 0 ${hPt} 0 0 cm /Im0 Do Q`;
+  beginObj(5); addPart(`<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
+
+  const xrefStart = offset;
+  let xref = 'xref\n0 6\n0000000000 65535 f \n';
+  for(let i=1;i<=5;i++){ xref += String(offsets[i]).padStart(10,'0') + ' 00000 n \n'; }
+  addPart(xref);
+  addPart(`trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
+
+  download(fnameBase()+'.pdf', new Blob(parts, {type:'application/pdf'}));
 }
 function saveJSON(){
   const data = {app:'vector-koubou', version:1, fname:$('fname').value,
-    doc:state.doc, shapes:state.shapes, idSeq};
+    doc:state.doc, shapes:state.shapes, layers:state.layers, activeLayer:state.activeLayer,
+    idSeq, groupSeq, layerSeq, guides:state.guides};
   download(fnameBase()+'.json', new Blob([JSON.stringify(data,null,1)], {type:'application/json'}));
 }
 function openJSON(file){
@@ -1172,7 +1852,13 @@ function openJSON(file){
       pushHistory();
       state.doc = data.doc || state.doc;
       state.shapes = data.shapes;
+      state.layers = Array.isArray(data.layers) ? data.layers : [];
+      state.activeLayer = data.activeLayer || null;
+      state.guides = data.guides || state.guides;
       idSeq = data.idSeq || (Math.max(0,...state.shapes.map(s=>s.id))+1);
+      groupSeq = data.groupSeq || groupSeq;
+      layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
+      ensureLayers();
       if(data.fname) $('fname').value = data.fname;
       state.sel.clear();
       zoomFit();
@@ -1181,6 +1867,181 @@ function openJSON(file){
     }
   };
   fr.readAsText(file);
+}
+
+/* ---- 各種ファイルのインポート ---- */
+function importFile(file){
+  const isSVG = file.type==='image/svg+xml' || /\.svg$/i.test(file.name);
+  if(isSVG) importSVG(file);
+  else importImage(file);
+}
+function importImage(file){
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    const src = fr.result;
+    const img = new Image();
+    img.onload = ()=>{
+      const maxW = state.doc.w*0.8, maxH = state.doc.h*0.8;
+      let w = img.naturalWidth || 200, h = img.naturalHeight || 200;
+      const k = Math.min(1, maxW/w, maxH/h);
+      w *= k; h *= k;
+      pushHistory();
+      const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src});
+      state.shapes.push(s);
+      state.sel = new Set([s.id]);
+      render();
+    };
+    img.onerror = ()=> alert('画像を読み込めませんでした。');
+    img.src = src;
+  };
+  fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
+  fr.readAsDataURL(file);
+}
+function sanitizeSVGNode(root){
+  root.querySelectorAll('script,foreignObject').forEach(n=>n.remove());
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+  let node = walker.currentNode;
+  while(node){
+    if(node.attributes){
+      [...node.attributes].forEach(attr=>{
+        if(/^on/i.test(attr.name)) node.removeAttribute(attr.name);
+        if(/^(href|xlink:href)$/i.test(attr.name) && /^\s*javascript:/i.test(attr.value)) node.removeAttribute(attr.name);
+      });
+    }
+    node = walker.nextNode();
+  }
+}
+function importSVG(file){
+  const fr = new FileReader();
+  fr.onload = ()=> importSVGText(fr.result);
+  fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
+  fr.readAsText(file);
+}
+function importSVGText(text){
+    let holder = null;
+    try{
+      const doc = new DOMParser().parseFromString(text, 'image/svg+xml');
+      if(doc.querySelector('parsererror')) throw new Error('parse error');
+      const svgRoot = doc.documentElement;
+      if(svgRoot.nodeName.toLowerCase() !== 'svg') throw new Error('not svg');
+      sanitizeSVGNode(svgRoot); // appendChild前に無害化（挿入後だとscriptが即実行されるため）
+
+      holder = document.createElement('div');
+      holder.style.cssText = 'position:absolute; left:-99999px; top:-99999px; width:3000px; height:3000px; overflow:hidden;';
+      document.body.appendChild(holder);
+      const imported = document.importNode(svgRoot, true);
+      holder.appendChild(imported);
+
+      const skipTags = new Set(['defs','clippath','mask','symbol','pattern']);
+      const inSkipped = el=>{
+        let p = el.parentElement;
+        while(p && p!==imported){ if(skipTags.has(p.nodeName.toLowerCase())) return true; p = p.parentElement; }
+        return false;
+      };
+      const newShapes = [];
+      imported.querySelectorAll('rect,circle,ellipse,line,polyline,polygon,path').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const len = el.getTotalLength();
+          const ctm = el.getCTM();
+          if(!len || !isFinite(len) || !ctm) return;
+          const n = clamp(Math.round(len/6), 8, 200);
+          const pts = [];
+          for(let i=0;i<=n;i++){
+            const lp = el.getPointAtLength(len*i/n).matrixTransform(ctm);
+            pts.push({x:lp.x, y:lp.y});
+          }
+          const cs = getComputedStyle(el);
+          let fill = el.getAttribute('fill') || cs.fill || '#000000';
+          if(fill==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(fill)) fill = 'none';
+          let stroke = el.getAttribute('stroke') || cs.stroke || 'none';
+          if(stroke==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(stroke)) stroke = 'none';
+          const tag = el.nodeName.toLowerCase();
+          const dAttr = el.getAttribute('d') || '';
+          const closed = ['rect','circle','ellipse','polygon'].includes(tag) || /[Zz]\s*$/.test(dAttr.trim());
+          const sw = parseFloat(el.getAttribute('stroke-width') || cs.strokeWidth) || (stroke!=='none' ? 1 : 0);
+          const op = clamp(parseFloat(el.getAttribute('opacity') || cs.opacity || '1') || 1, 0, 1);
+          newShapes.push(newShape('path', {pts, closed, smooth:false, fill, stroke, strokeWidth:sw, opacity:op}));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+      imported.querySelectorAll('text').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const ctm = el.getCTM(); if(!ctm) return;
+          const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+          const pt = stage.createSVGPoint(); pt.x = x; pt.y = y;
+          const wp = pt.matrixTransform(ctm);
+          const scale = Math.hypot(ctm.a, ctm.b) || 1;
+          const cs = getComputedStyle(el);
+          const size = (parseFloat(el.getAttribute('font-size')) || parseFloat(cs.fontSize) || 16) * scale;
+          const weight = el.getAttribute('font-weight') || cs.fontWeight || '400';
+          newShapes.push(newShape('text', {
+            x:wp.x, y:wp.y, text: el.textContent || '', size,
+            font: /serif/i.test(cs.fontFamily) ? 'serif' : /mono/i.test(cs.fontFamily) ? 'monospace' : 'sans-serif',
+            bold: parseInt(weight,10) >= 600 || /bold/i.test(weight),
+            stroke:'none', fill: el.getAttribute('fill') || cs.fill || '#000000',
+          }));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+      imported.querySelectorAll('image').forEach(el=>{
+        if(inSkipped(el)) return;
+        try{
+          const href = el.getAttribute('href') || el.getAttributeNS('http://www.w3.org/1999/xlink','href') || el.getAttribute('xlink:href');
+          if(!href) return;
+          const ctm = el.getCTM(); if(!ctm) return;
+          const x = parseFloat(el.getAttribute('x')) || 0, y = parseFloat(el.getAttribute('y')) || 0;
+          const w = parseFloat(el.getAttribute('width')) || 0, h = parseFloat(el.getAttribute('height')) || 0;
+          const corners = [[x,y],[x+w,y],[x+w,y+h],[x,y+h]].map(([px,py])=>{
+            const pt = stage.createSVGPoint(); pt.x = px; pt.y = py;
+            return pt.matrixTransform(ctm);
+          });
+          const xs = corners.map(c=>c.x), ys = corners.map(c=>c.y);
+          const nx = Math.min(...xs), ny = Math.min(...ys);
+          newShapes.push(newShape('image', {x:nx, y:ny, w:Math.max(...xs)-nx, h:Math.max(...ys)-ny, src:href}));
+        }catch(err){ /* サポート外の要素はスキップ */ }
+      });
+
+      if(!newShapes.length){ alert('読み込めるオブジェクトが見つかりませんでした。'); return; }
+      pushHistory();
+      state.shapes.push(...newShapes);
+      state.sel = new Set(newShapes.map(s=>s.id));
+      render();
+    }catch(err){
+      alert('SVGファイルを読み込めませんでした。');
+    }finally{
+      if(holder) document.body.removeChild(holder);
+    }
+}
+
+/* ---- 自動保存 ---- */
+const AUTOSAVE_KEY = 'vector-koubou-autosave';
+let autosaveTimer = null;
+function autosave(){
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(()=>{
+    try{
+      localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({app:'vector-koubou', version:1,
+        fname:$('fname').value, doc:state.doc, shapes:state.shapes, layers:state.layers,
+        activeLayer:state.activeLayer, idSeq, groupSeq, layerSeq, guides:state.guides}));
+    }catch(err){ /* 容量超過などで保存できない場合も動作は継続する */ }
+  }, 400);
+}
+function restoreAutosave(){
+  try{
+    const data = JSON.parse(localStorage.getItem(AUTOSAVE_KEY));
+    if(!data || !Array.isArray(data.shapes) || !data.shapes.length) return false;
+    state.doc = data.doc || state.doc;
+    state.shapes = data.shapes;
+    state.layers = Array.isArray(data.layers) ? data.layers : [];
+    state.activeLayer = data.activeLayer || null;
+    state.guides = data.guides || {v:[], h:[]};
+    idSeq = data.idSeq || (Math.max(0,...state.shapes.map(s=>s.id))+1);
+    groupSeq = data.groupSeq || 1;
+    layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
+    ensureLayers();
+    if(data.fname) $('fname').value = data.fname;
+    return true;
+  }catch(err){ return false; }
 }
 
 /* ================= キーボード ================= */
@@ -1194,16 +2055,17 @@ window.addEventListener('keydown', e=>{
     if(k==='z'){ e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if(k==='y'){ e.preventDefault(); redo(); return; }
     if(k==='c'){ e.preventDefault(); copySel(); return; }
-    if(k==='v'){ e.preventDefault(); paste(); return; }
+    // Ctrl+V は document の paste イベント側で処理（外部クリップボード対応のため）
     if(k==='d'){ e.preventDefault(); duplicateSel(); return; }
-    if(k==='a'){ e.preventDefault(); state.sel = new Set(state.shapes.filter(s=>s.visible&&!s.locked).map(s=>s.id)); render(); return; }
+    if(k==='g'){ e.preventDefault(); e.shiftKey ? ungroupSel() : groupSel(); return; }
+    if(k==='a'){ e.preventDefault(); state.sel = new Set(state.shapes.filter(s=>shapeVisible(s)&&!shapeLocked(s)).map(s=>s.id)); render(); return; }
     if(e.key==='=' || e.key==='+'){ e.preventDefault(); zoomAt(1.2); return; }
     if(e.key==='-'){ e.preventDefault(); zoomAt(1/1.2); return; }
     if(e.key==='0'){ e.preventDefault(); zoomFit(); return; }
     if(k==='s'){ e.preventDefault(); saveJSON(); return; }
     return;
   }
-  const toolKeys = {v:'select', r:'rect', e:'ellipse', l:'line', p:'poly', s:'star', n:'pen', b:'pencil', t:'text', h:'hand'};
+  const toolKeys = {v:'select', a:'node', r:'rect', e:'ellipse', l:'line', p:'poly', s:'star', n:'pen', b:'pencil', t:'text', i:'picker', h:'hand'};
   const tk = toolKeys[e.key.toLowerCase()];
   if(tk){ setTool(tk); return; }
   if(e.key==='Delete' || e.key==='Backspace'){ e.preventDefault(); deleteSel(); return; }
@@ -1227,18 +2089,53 @@ window.addEventListener('keyup', e=>{
   if(e.code==='Space'){ spaceDown = false; if(state.tool!=='hand') stage.classList.remove('tool-hand'); }
 });
 
+/* ---- クリップボード貼り付け（画像・SVGコード・内部コピー） ---- */
+document.addEventListener('paste', e=>{
+  const tag = ((document.activeElement && document.activeElement.tagName) || '').toLowerCase();
+  if(tag==='input' || tag==='textarea') return;
+  const cd = e.clipboardData;
+  if(cd){
+    for(const item of cd.items){
+      if(item.type && item.type.startsWith('image/')){
+        const f = item.getAsFile();
+        if(f){ e.preventDefault(); importImage(f); return; }
+      }
+    }
+    const text = cd.getData('text/plain') || '';
+    if(text.startsWith('vector-koubou:')){ e.preventDefault(); pasteShapesJSON(text.slice('vector-koubou:'.length)); return; }
+    if(/<svg[\s>]/i.test(text)){ e.preventDefault(); importSVGText(text); return; }
+  }
+  paste(); // 外部コンテンツがなければ内部クリップボードから複製
+});
+
 /* ================= 上部バーのイベント ================= */
 $('btnNew').onclick = ()=>{
   if(state.shapes.length && !confirm('現在のデザインを破棄して新規作成しますか？（保存していない内容は失われます）')) return;
   state.shapes = []; state.sel.clear(); undoStack.length=0; redoStack.length=0;
+  state.guides = {v:[], h:[]};
+  state.layers = []; state.activeLayer = null; layerSeq = 1; ensureLayers();
+  try{ localStorage.removeItem(AUTOSAVE_KEY); }catch(err){}
   $('fname').value = '無題のデザイン';
   zoomFit();
 };
+$('fname').oninput = autosave;
 $('btnOpen').onclick = ()=> $('fileInput').click();
 $('fileInput').onchange = e=>{ if(e.target.files[0]) openJSON(e.target.files[0]); e.target.value=''; };
+$('btnImport').onclick = ()=> $('importInput').click();
+$('importInput').onchange = e=>{ if(e.target.files[0]) importFile(e.target.files[0]); e.target.value=''; };
 $('btnSave').onclick = saveJSON;
-$('btnSVG').onclick = exportSVG;
-$('btnPNG').onclick = exportPNG;
+$('btnExport').onclick = e=>{
+  e.stopPropagation();
+  const m = $('exportMenu');
+  m.style.display = (m.style.display==='flex') ? 'none' : 'flex';
+};
+document.addEventListener('click', ()=>{ $('exportMenu').style.display = 'none'; });
+$('exportMenu').querySelectorAll('[data-fmt]').forEach(btn=>{
+  btn.onclick = ()=>{
+    $('exportMenu').style.display = 'none';
+    ({svg:exportSVG, png:exportPNG, jpeg:exportJPEG, pdf:exportPDF})[btn.dataset.fmt]();
+  };
+});
 $('btnUndo').onclick = undo;
 $('btnRedo').onclick = redo;
 $('btnZoomIn').onclick = ()=> zoomAt(1.2);
@@ -1246,12 +2143,16 @@ $('btnZoomOut').onclick = ()=> zoomAt(1/1.2);
 $('btnFit').onclick = zoomFit;
 $('chkGrid').onchange = e=>{ state.grid = e.target.checked; render(); };
 $('chkSnap').onchange = e=>{ state.snap = e.target.checked; };
+$('chkRuler').onchange = e=>{ state.ruler = e.target.checked; renderChrome(); };
+$('btnAddLayer').onclick = addLayer;
 
 /* ================= 起動 ================= */
 buildToolbar();
 setTool('select');
 window.addEventListener('resize', updateWorld);
+const restored = restoreAutosave();
 zoomFit();
+if(restored) $('hint').textContent = '前回の作業内容を復元しました（自動保存）';
 </script>
 </body>
 </html>
