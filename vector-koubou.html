@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>ベクターデザイン工房</title>
 <style>
 :root{
@@ -11,7 +11,7 @@
   --canvas-bg:#2a2c33;
 }
 *{box-sizing:border-box; margin:0; padding:0;}
-html,body{height:100%; overflow:hidden;}
+html,body{height:100%; overflow:hidden; overscroll-behavior:none;}
 body{
   font-family:"Hiragino Kaku Gothic ProN","Yu Gothic UI","Segoe UI",Meiryo,sans-serif;
   background:var(--ink); color:var(--text); font-size:13px;
@@ -131,6 +131,11 @@ input[type=range]{accent-color:var(--accent);}
 .cp-hexrow span{color:var(--muted);}
 .cp-hexrow input{flex:1; text-transform:uppercase;}
 
+/* ===== タッチ操作（iPad等） ===== */
+button,select,.tbtn{touch-action:manipulation;}
+#topbar,#toolbar,#side,#status{user-select:none; -webkit-user-select:none;}
+#topbar input,#side input,#side textarea,#side select{user-select:auto; -webkit-user-select:auto;}
+
 /* ===== ステータスバー ===== */
 #status{flex:0 0 auto; display:flex; gap:16px; padding:4px 12px; background:var(--panel);
   border-top:1px solid var(--line); color:var(--muted); font-size:11px;}
@@ -207,7 +212,18 @@ input[type=range]{accent-color:var(--accent);}
 
 <footer id="status"><span id="coords">x: 0, y: 0</span><span id="hint"></span></footer>
 <input type="file" id="fileInput" accept=".json,application/json" style="display:none">
-<input type="file" id="importInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/gif,image/webp,image/bmp" style="display:none">
+<input type="file" id="importInput" accept="image/*,.svg,.png,.jpg,.jpeg,.gif,.webp,.bmp,.avif,.ico,.tif,.tiff,.heic,.heif,.jxl" style="display:none">
+<input type="file" id="fontInput" accept=".ttf,.otf,.woff,.woff2" style="display:none">
+<datalist id="gfList">
+  <option>Noto Sans JP</option><option>Noto Serif JP</option><option>M PLUS 1p</option>
+  <option>M PLUS Rounded 1c</option><option>Zen Kaku Gothic New</option><option>Zen Maru Gothic</option>
+  <option>Zen Old Mincho</option><option>Kosugi Maru</option><option>Sawarabi Mincho</option>
+  <option>Sawarabi Gothic</option><option>Shippori Mincho</option><option>Kaisei Decol</option>
+  <option>Yusei Magic</option><option>DotGothic16</option><option>Klee One</option>
+  <option>RocknRoll One</option><option>Reggae One</option><option>Stick</option>
+  <option>Roboto</option><option>Open Sans</option><option>Lato</option><option>Montserrat</option>
+  <option>Oswald</option><option>Playfair Display</option><option>Lobster</option><option>Pacifico</option>
+</datalist>
 
 <script>
 "use strict";
@@ -222,6 +238,8 @@ const state = {
   zoom: 1, panX: 40, panY: 40,
   grid: false, snap: false, gridSize: 20,
   ruler: true, guides: {v:[], h:[]},
+  webFonts: [],         // 読み込み済みGoogle Fonts名
+  customFonts: [],      // ファイルから読み込んだフォント [{name, data}]
 };
 const styleNow = {fill:'#d8d1c2', stroke:'#33312e', strokeWidth:2, opacity:1, fillAlpha:1, strokeAlpha:1};
 let idSeq = 1;
@@ -232,6 +250,9 @@ let clipboard = [];
 let drag = null;          // 進行中のドラッグ操作
 let pen = null;           // ペンツールの作業中の点列
 let spaceDown = false;
+const touches = new Map(); // タッチ中のポインタ位置
+let pinch = null;          // 2本指ピンチの状態
+let lastTap = null;        // ダブルタップ検出用
 
 const $ = id => document.getElementById(id);
 const stage = $('stage'), world = $('world'), shapesLayer = $('shapesLayer'),
@@ -399,6 +420,7 @@ function toWorld(e){
   pt.x = e.clientX; pt.y = e.clientY;
   return pt.matrixTransform(world.getScreenCTM().inverse());
 }
+function capture(e){ try{ capture(e); }catch(err){ /* 合成イベント等では失敗しても続行 */ } }
 function toScreen(p){
   const pt = stage.createSVGPoint();
   pt.x = p.x; pt.y = p.y;
@@ -454,6 +476,64 @@ function pathD(s){
   }
   if(s.closed) d += ' Z';
   return d;
+}
+
+/* ================= テキストの自動折り返し・文字間調整 ================= */
+const measureCtx = document.createElement('canvas').getContext('2d');
+function fontFamilyAttr(f){
+  f = f || 'sans-serif';
+  return /^(sans-serif|serif|monospace)$/.test(f) ? f : '"'+f+'", sans-serif';
+}
+let wordSeg = null;
+const KINSOKU_HEAD = /^[、。，．！？!?・：；:;）」』〉》〕】｝%％‰°℃ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮーゝゞヽヾ々…‥,.)\]}]/;
+const KINSOKU_TAIL = /[（「『〈《〔【｛([{]$/;
+function segmentWords(text){
+  // 単語（名詞等）の途中で改行しないよう、言語対応の単語分割を使う
+  let units;
+  try{
+    if(!wordSeg && window.Intl && Intl.Segmenter) wordSeg = new Intl.Segmenter('ja', {granularity:'word'});
+    units = wordSeg ? [...wordSeg.segment(text)].map(x=>x.segment) : null;
+  }catch(err){ units = null; }
+  if(!units) units = text.split(/(\s+)/).filter(t=>t!=='');
+  // 禁則処理: 行頭に来てはならない記号は前の語へ、行末に残せない開き括弧は次の語へ結合
+  const out = [];
+  units.forEach(u=>{
+    if(out.length && (KINSOKU_HEAD.test(u) || KINSOKU_TAIL.test(out[out.length-1]))) out[out.length-1] += u;
+    else out.push(u);
+  });
+  return out;
+}
+function layoutText(s){
+  measureCtx.font = `${s.bold?'bold ':''}${s.size}px ${fontFamilyAttr(s.font)}`;
+  const w = t => measureCtx.measureText(t).width;
+  const out = [];
+  const mk = (text, last)=>{
+    let ls = 0;
+    // 行末揃え: 枠幅との差を文字間に均等配分（最大0.25em、不自然な広がりを防ぐ）
+    if(s.boxW && s.justify!==false && !last && text.length>1){
+      ls = clamp((s.boxW - w(text))/text.length, 0, s.size*0.25);
+    }
+    return {text, ls: Math.round(ls*100)/100};
+  };
+  String(s.text).split('\n').forEach(para=>{
+    if(!s.boxW || !para){ out.push({text:para, ls:0}); return; }
+    let cur = '';
+    segmentWords(para).forEach(u=>{
+      if(cur && w(cur+u) > s.boxW){
+        out.push(mk(cur, false));
+        cur = u.replace(/^\s+/,'');
+      }else cur += u;
+      // 1単語が枠より長い場合のみ、やむを得ず文字単位で分割
+      while(cur.length>1 && w(cur) > s.boxW){
+        let k = cur.length-1;
+        while(k>1 && w(cur.slice(0,k)) > s.boxW) k--;
+        out.push(mk(cur.slice(0,k), false));
+        cur = cur.slice(k).replace(/^\s+/,'');
+      }
+    });
+    out.push(mk(cur, true));
+  });
+  return out;
 }
 
 /* ================= グラデーション ================= */
@@ -525,14 +605,14 @@ function shapeEl(s, live){
       el = document.createElementNS(NS,'text');
       el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
       el.setAttribute('font-size',s.size);
-      el.setAttribute('font-family',s.font||'sans-serif');
+      el.setAttribute('font-family',fontFamilyAttr(s.font));
       if(s.bold) el.setAttribute('font-weight','bold');
-      const lines = String(s.text).split('\n');
-      lines.forEach((ln,i)=>{
+      layoutText(s).forEach((ln,i)=>{
         const t = document.createElementNS(NS,'tspan');
         t.setAttribute('x',fmt(s.x));
         if(i>0) t.setAttribute('dy','1.25em');
-        t.textContent = ln || ' ';
+        if(ln.ls) t.setAttribute('letter-spacing', ln.ls);
+        t.textContent = ln.text || ' ';
         el.appendChild(t);
       });
       break;
@@ -594,6 +674,10 @@ function geomBBox(s){
     case 'text':{
       const el = $('el-'+s.id);
       if(el){ const b = el.getBBox(); return {x:b.x, y:b.y, w:b.width, h:b.height}; }
+      if(s.boxW){
+        const n = layoutText(s).length;
+        return {x:s.x, y:s.y-s.size, w:s.boxW, h:s.size*1.25*Math.max(0,n-1)+s.size*1.2};
+      }
       return {x:s.x, y:s.y-s.size, w:s.size*String(s.text).length*0.6, h:s.size*1.2};
     }
   }
@@ -652,6 +736,17 @@ function redo(){
 function pruneSel(){
   const ids = new Set(state.shapes.map(s=>s.id));
   [...state.sel].forEach(id=>{ if(!ids.has(id)) state.sel.delete(id); });
+}
+function cancelActiveDrag(){
+  // ピンチ開始やポインタ喪失時に進行中の編集を巻き戻す
+  if(!drag) return;
+  if(['create','move','resize','rotate','node','pencil'].includes(drag.mode) && undoStack.length){
+    restoreSnapshot(undoStack.pop());
+    pruneSel();
+  }
+  if(drag.mode==='pan') stage.classList.remove('panning');
+  drag = null;
+  render();
 }
 
 /* ================= 描画 ================= */
@@ -855,7 +950,7 @@ const HINTS = {
   rect:'ドラッグで長方形を描画（Shiftで正方形）', ellipse:'ドラッグで楕円を描画（Shiftで正円）',
   line:'ドラッグで直線を描画（Shiftで45°刻み）', poly:'ドラッグで多角形を描画（辺数はプロパティで変更）',
   star:'ドラッグで星形を描画', pen:'クリックで点を追加／始点クリックで閉じる／Enterで確定／Escで取消',
-  pencil:'ドラッグでフリーハンド描画', text:'クリックした位置に文字を配置（ダブルクリックで再編集）',
+  pencil:'ドラッグでフリーハンド描画', text:'クリックした位置に文字を配置（ダブルクリックで再編集／プロパティの折返幅で単語を切らない自動改行）',
   hand:'ドラッグで画面を移動（Spaceキーでも一時切替）',
   node:'パス・直線を選択して点をドラッグ／選択中のパスの線上クリックで点追加／点をダブルクリックまたはAlt+クリックで削除',
   picker:'図形をクリックしてスタイルを取得（他の図形を選択中ならそのスタイルを適用）',
@@ -880,10 +975,33 @@ function setTool(t){
 
 /* ================= ポインタ操作 ================= */
 stage.addEventListener('pointerdown', e=>{
+  if(e.pointerType==='touch'){
+    touches.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    if(touches.size===2){
+      // 2本指: 進行中の操作を取り消してピンチズーム／パンへ移行
+      cancelActiveDrag();
+      const pts = [...touches.values()];
+      pinch = {ids: [...touches.keys()],
+        d0: Math.hypot(pts[0].x-pts[1].x, pts[0].y-pts[1].y) || 1,
+        c0: {x:(pts[0].x+pts[1].x)/2, y:(pts[0].y+pts[1].y)/2},
+        z0: state.zoom, px0: state.panX, py0: state.panY};
+      capture(e);
+      return;
+    }
+    if(touches.size > 2) return;
+    // ダブルタップ → ダブルクリック相当（テキスト再編集・ノード削除・ペン確定）
+    const now = Date.now();
+    if(lastTap && now-lastTap.t < 350 && Math.hypot(e.clientX-lastTap.x, e.clientY-lastTap.y) < 24){
+      lastTap = null;
+      handleStageDbl(e);
+      return;
+    }
+    lastTap = {t:now, x:e.clientX, y:e.clientY};
+  }
   if(e.button===1 || spaceDown || state.tool==='hand'){
     drag = {mode:'pan', sx:e.clientX, sy:e.clientY, px:state.panX, py:state.panY};
     stage.classList.add('panning');
-    stage.setPointerCapture(e.pointerId);
+    capture(e);
     return;
   }
   if(e.button!==0) return;
@@ -895,7 +1013,7 @@ stage.addEventListener('pointerdown', e=>{
     if(e.target.dataset && e.target.dataset.guide){
       const [axis, idx] = e.target.dataset.guide.split(':');
       drag = {mode:'guide', axis, i:+idx};
-      stage.setPointerCapture(e.pointerId);
+      capture(e);
       return;
     }
     const rc = stage.getBoundingClientRect();
@@ -903,12 +1021,12 @@ stage.addEventListener('pointerdown', e=>{
     if(sx < 20 && sy >= 20){
       state.guides.v.push((sx - state.panX)/state.zoom);
       drag = {mode:'guide', axis:'v', i:state.guides.v.length-1};
-      stage.setPointerCapture(e.pointerId); renderChrome(); return;
+      capture(e); renderChrome(); return;
     }
     if(sy < 20 && sx >= 20){
       state.guides.h.push((sy - state.panY)/state.zoom);
       drag = {mode:'guide', axis:'h', i:state.guides.h.length-1};
-      stage.setPointerCapture(e.pointerId); renderChrome(); return;
+      capture(e); renderChrome(); return;
     }
   }
 
@@ -924,7 +1042,7 @@ stage.addEventListener('pointerdown', e=>{
       }
       pushHistory();
       drag = {mode:'node', s, i:+e.target.dataset.node, moved:false};
-      stage.setPointerCapture(e.pointerId);
+      capture(e);
       return;
     }
     const idAttr = e.target.dataset ? e.target.dataset.id : null;
@@ -936,7 +1054,7 @@ stage.addEventListener('pointerdown', e=>{
         s.pts.splice(i+1, 0, {x:p.x, y:p.y});
         drag = {mode:'node', s, i:i+1};
         render();
-        stage.setPointerCapture(e.pointerId);
+        capture(e);
       }else if(s && (s.type==='path' || s.type==='line')){
         state.sel = new Set([s.id]);
         render();
@@ -990,7 +1108,7 @@ stage.addEventListener('pointerdown', e=>{
         render();
       }
     }
-    stage.setPointerCapture(e.pointerId);
+    capture(e);
     return;
   }
 
@@ -1007,7 +1125,7 @@ stage.addEventListener('pointerdown', e=>{
     state.sel = new Set([s.id]);
     drag = {mode:'create', s, start:{x,y}};
     render();
-    stage.setPointerCapture(e.pointerId);
+    capture(e);
     return;
   }
 
@@ -1018,7 +1136,7 @@ stage.addEventListener('pointerdown', e=>{
     state.sel = new Set([s.id]);
     drag = {mode:'pencil', s, last:p};
     render();
-    stage.setPointerCapture(e.pointerId);
+    capture(e);
     return;
   }
 
@@ -1045,6 +1163,24 @@ stage.addEventListener('pointerdown', e=>{
 });
 
 window.addEventListener('pointermove', e=>{
+  if(pinch){
+    if(touches.has(e.pointerId)) touches.set(e.pointerId, {x:e.clientX, y:e.clientY});
+    const a = touches.get(pinch.ids[0]), b = touches.get(pinch.ids[1]);
+    if(a && b){
+      const d = Math.hypot(a.x-b.x, a.y-b.y) || 1;
+      const c = {x:(a.x+b.x)/2, y:(a.y+b.y)/2};
+      const r = stage.getBoundingClientRect();
+      const nz = clamp(pinch.z0 * d/pinch.d0, 0.05, 16);
+      // ピンチ開始時に2指の中心にあった点が、常に現在の中心に来るよう追従
+      const wx = (pinch.c0.x - r.left - pinch.px0)/pinch.z0;
+      const wy = (pinch.c0.y - r.top - pinch.py0)/pinch.z0;
+      state.zoom = nz;
+      state.panX = (c.x - r.left) - wx*nz;
+      state.panY = (c.y - r.top) - wy*nz;
+      updateWorld();
+    }
+    return;
+  }
   const p = toWorld(e);
   $('coords').textContent = `x: ${fmt(p.x)}, y: ${fmt(p.y)}`;
   if(pen){ pen.cur = {x:snapX(p.x), y:snapY(p.y)}; overlayRenderPen(); }
@@ -1174,6 +1310,10 @@ window.addEventListener('pointermove', e=>{
 });
 
 window.addEventListener('pointerup', e=>{
+  if(e.pointerType==='touch'){
+    touches.delete(e.pointerId);
+    if(pinch && pinch.ids.includes(e.pointerId)) pinch = null;
+  }
   if(!drag) return;
   if(drag.mode==='pan') stage.classList.remove('panning');
   if(drag.mode==='node' && !drag.moved){
@@ -1223,7 +1363,13 @@ window.addEventListener('pointerup', e=>{
   renderHandles();
 });
 
-stage.addEventListener('dblclick', e=>{
+window.addEventListener('pointercancel', e=>{
+  touches.delete(e.pointerId);
+  pinch = null;
+  cancelActiveDrag();
+});
+
+function handleStageDbl(e){
   if(state.tool==='node'){
     // pointer captureでtargetがstageになるため、座標から最寄りのノードを探す
     const s = selShapes()[0];
@@ -1242,7 +1388,8 @@ stage.addEventListener('dblclick', e=>{
     if(s && s.type==='text'){ state.sel=new Set([s.id]); render(); openTextEditor(s); }
   }
   if(state.tool==='pen' && pen && pen.pts.length>=2){ finishPen(false); render(); }
-});
+}
+stage.addEventListener('dblclick', handleStageDbl);
 
 stage.addEventListener('wheel', e=>{
   e.preventDefault();
@@ -1296,7 +1443,12 @@ function bboxTransform(s, o, ob, nb){
     case 'line': s.x1=mx(o.x1); s.y1=my(o.y1); s.x2=mx(o.x2); s.y2=my(o.y2); break;
     case 'poly': s.cx=mx(o.cx); s.cy=my(o.cy); s.r=o.r*(sx+sy)/2; break;
     case 'path': s.pts=o.pts.map(p=>({x:mx(p.x), y:my(p.y)})); break;
-    case 'text': s.x=mx(o.x); s.y=my(o.y); s.size=Math.max(4, o.size*sy); break;
+    case 'text':
+      s.x=mx(o.x); s.y=my(o.y); s.size=Math.max(4, o.size*sy);
+      // 横方向のリサイズは折返幅の設定・調整として扱う
+      if(o.boxW) s.boxW = Math.max(10, o.boxW*sx);
+      else if(Math.abs(sx-1)>0.001 && ob.w>1) s.boxW = Math.max(10, nb.w);
+      break;
     case 'image': s.x=mx(o.x); s.y=my(o.y); s.w=o.w*sx; s.h=o.h*sy; break;
   }
 }
@@ -1337,6 +1489,40 @@ function openTextEditor(s){
     if(ev.key==='Escape'){ ta.onblur=null; ed.style.display='none'; render(); }
     if(ev.key==='Enter' && (ev.ctrlKey||ev.metaKey)) commit();
   };
+}
+
+/* ================= Webフォント（Google Fonts・フォントファイル） ================= */
+function loadGoogleFont(name){
+  const fam = String(name||'').trim();
+  if(!fam) return Promise.reject(new Error('empty'));
+  return new Promise((resolve, reject)=>{
+    const finish = ()=> document.fonts.load(`16px "${fam}"`).then(fs=>{
+      if(!fs.length) return reject(new Error('font not found'));
+      if(!state.webFonts.includes(fam)) state.webFonts.push(fam);
+      resolve(fam);
+    }).catch(reject);
+    const id = 'gf-' + fam.replace(/[^a-z0-9]/gi,'-');
+    if(document.getElementById(id)){ finish(); return; }
+    const l = document.createElement('link');
+    l.id = id; l.rel = 'stylesheet';
+    l.href = 'https://fonts.googleapis.com/css2?family=' +
+      encodeURIComponent(fam).replace(/%20/g,'+') + ':wght@400;700&display=swap';
+    l.onload = finish;
+    l.onerror = ()=>{ l.remove(); reject(new Error('network error')); };
+    document.head.appendChild(l);
+    setTimeout(()=> reject(new Error('timeout')), 10000);
+  });
+}
+function registerCustomFont(cf){
+  return new FontFace(cf.name, `url(${cf.data})`).load().then(ff=>{
+    document.fonts.add(ff);
+    return cf.name;
+  });
+}
+function reloadFonts(){
+  // 保存データ復元時に、使用フォントを再読み込みして再描画
+  (state.webFonts||[]).forEach(f=> loadGoogleFont(f).catch(()=>{}));
+  (state.customFonts||[]).forEach(cf=> registerCustomFont(cf).then(()=>render(true)).catch(()=>{}));
 }
 
 /* ================= プロパティパネル ================= */
@@ -1479,14 +1665,20 @@ function renderProps(){
                  <label class="toggle"><input type="checkbox" id="pClosed" ${one.closed?'checked':''}>閉じる</label>`) + `</div>`;
     }
     if(one.type==='text'){
+      const builtinLabels = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
+      const fontList = ['sans-serif','serif','monospace',
+        ...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
       html += `<div class="pgroup">` +
         propRow(`<textarea id="pText" rows="2" style="flex:1">${esc(one.text)}</textarea>`) +
         numIn('pSize','サイズ',one.size) +
-        propRow(`<label>書体</label><select id="pFont" style="flex:1">
-          <option value="sans-serif">ゴシック体</option>
-          <option value="serif">明朝体</option>
-          <option value="monospace">等幅</option></select>
-          <label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) + `</div>`;
+        propRow(`<label>書体</label><select id="pFont" style="flex:1">` +
+          fontList.map(f=>`<option value="${esc(f)}">${esc(builtinLabels[f]||f)}</option>`).join('') +
+          `</select><label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
+        propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
+          <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
+          <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
+        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" title="0で折り返しなし。単語を切らずに自動改行します">
+          <label class="toggle" title="行末を枠に揃えるよう文字間を自動調整"><input type="checkbox" id="pJustify" ${one.justify!==false?'checked':''}>均等</label>`) + `</div>`;
     }
   }
   // 整列・重ね順
@@ -1527,6 +1719,20 @@ function renderProps(){
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     const pf = $('pFont'); if(pf){ pf.value = one.font||'sans-serif'; pf.onchange = ()=>{ startEdit(); one.font = pf.value; render(); }; }
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
+    const pfl = $('pFontLoad');
+    if(pfl) pfl.onclick = ()=>{
+      const name = $('pFontName').value.trim();
+      if(!name) return;
+      pfl.disabled = true; pfl.textContent = '…';
+      loadGoogleFont(name)
+        .then(fam=>{ startEdit(); one.font = fam; render(); })
+        .catch(()=>{ pfl.disabled = false; pfl.textContent = '読込';
+          alert('フォントを読み込めませんでした。フォント名とネット接続を確認してください。'); });
+    };
+    const pff = $('pFontFile'); if(pff) pff.onclick = ()=> $('fontInput').click();
+    const pbw = $('pBoxW');
+    if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value; one.boxW = v>0 ? Math.max(10,v) : undefined; render(); };
+    const pj = $('pJustify'); if(pj) pj.onchange = ()=>{ startEdit(); one.justify = pj.checked; render(); };
     const psm = $('pSmooth'); if(psm) psm.onchange = ()=>{ startEdit(); one.smooth = psm.checked; render(); };
     const pcl = $('pClosed'); if(pcl) pcl.onchange = ()=>{ startEdit(); one.closed = pcl.checked; render(); };
     const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); one.dash = pd.value; render(); };
@@ -1915,12 +2121,56 @@ function buildSVGString(){
   out += '</svg>';
   return out;
 }
+/* ---- 書き出し用フォント埋め込み ----
+   Webフォント使用時、<img>経由のラスタライズは外部リソースを取得できないため
+   フォントをdata URIとしてSVGに埋め込む。text=で使用文字のみのサブセットを要求。 */
+function usedWebFonts(){
+  const builtin = /^(sans-serif|serif|monospace)$/;
+  const map = new Map();
+  state.shapes.forEach(s=>{
+    if(shapeVisible(s) && s.type==='text' && s.font && !builtin.test(s.font)){
+      map.set(s.font, (map.get(s.font)||'') + s.text);
+    }
+  });
+  return map;
+}
+async function fontEmbedCSS(){
+  let css = '';
+  for(const [fam, text] of usedWebFonts()){
+    const cf = (state.customFonts||[]).find(c=>c.name===fam);
+    if(cf){ css += `@font-face{font-family:"${fam}";src:url(${cf.data});}`; continue; }
+    try{
+      const uniq = [...new Set(text)].join('');
+      const url = 'https://fonts.googleapis.com/css2?family=' +
+        encodeURIComponent(fam).replace(/%20/g,'+') + ':wght@400;700&display=swap' +
+        '&text=' + encodeURIComponent(uniq);
+      let txt = await (await fetch(url)).text();
+      for(const u of new Set([...txt.matchAll(/url\((https:[^)]+)\)/g)].map(m=>m[1]))){
+        const bytes = new Uint8Array(await (await fetch(u)).arrayBuffer());
+        let bin = '';
+        for(let i=0; i<bytes.length; i+=0x8000)
+          bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
+        txt = txt.split(u).join('data:font/woff2;base64,' + btoa(bin));
+      }
+      css += txt;
+    }catch(err){ /* オフライン時はフォント埋め込みなしで続行 */ }
+  }
+  return css;
+}
+async function buildSVGStringWithFonts(){
+  const svg = buildSVGString();
+  const css = await fontEmbedCSS();
+  return css ? svg.replace(/^(<svg[^>]*>)/, (m,p1)=> p1 + '<style>' + css + '</style>') : svg;
+}
 function fnameBase(){ return ($('fname').value || 'design').trim(); }
 function exportSVG(){
-  download(fnameBase()+'.svg', new Blob([buildSVGString()], {type:'image/svg+xml'}));
+  buildSVGStringWithFonts().then(svg=>
+    download(fnameBase()+'.svg', new Blob([svg], {type:'image/svg+xml'})));
 }
 function rasterize(scale, forceOpaque, cb){
-  const svg = buildSVGString();
+  buildSVGStringWithFonts().then(svg=> rasterizeSVG(svg, scale, forceOpaque, cb));
+}
+function rasterizeSVG(svg, scale, forceOpaque, cb){
   const url = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
   const img = new Image();
   img.onload = ()=>{
@@ -1982,7 +2232,8 @@ function buildPDF(jpegBytes, wPx, hPx){
 function saveJSON(){
   const data = {app:'vector-koubou', version:1, fname:$('fname').value,
     doc:state.doc, shapes:state.shapes, layers:state.layers, activeLayer:state.activeLayer,
-    idSeq, groupSeq, layerSeq, guides:state.guides};
+    idSeq, groupSeq, layerSeq, guides:state.guides,
+    webFonts:state.webFonts, customFonts:state.customFonts};
   download(fnameBase()+'.json', new Blob([JSON.stringify(data,null,1)], {type:'application/json'}));
 }
 function openJSON(file){
@@ -2001,6 +2252,9 @@ function openJSON(file){
       groupSeq = data.groupSeq || groupSeq;
       layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
       ensureLayers();
+      state.webFonts = Array.isArray(data.webFonts) ? data.webFonts : [];
+      state.customFonts = Array.isArray(data.customFonts) ? data.customFonts : [];
+      reloadFonts();
       if(data.fname) $('fname').value = data.fname;
       state.sel.clear();
       zoomFit();
@@ -2013,27 +2267,77 @@ function openJSON(file){
 
 /* ---- 各種ファイルのインポート ---- */
 function importFile(file){
-  const isSVG = file.type==='image/svg+xml' || /\.svg$/i.test(file.name);
-  if(isSVG) importSVG(file);
+  if(file.type==='image/svg+xml' || /\.svg$/i.test(file.name)) importSVG(file);
+  else if(file.type==='application/json' || /\.json$/i.test(file.name)) openJSON(file);
   else importImage(file);
 }
+function placeImage(src, natW, natH){
+  const maxW = state.doc.w*0.8, maxH = state.doc.h*0.8;
+  let w = natW || 200, h = natH || 200;
+  const k = Math.min(1, maxW/w, maxH/h);
+  w *= k; h *= k;
+  pushHistory();
+  const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src});
+  state.shapes.push(s);
+  state.sel = new Set([s.id]);
+  render();
+}
+const scriptCache = {};
+function loadScript(src){
+  if(!scriptCache[src]) scriptCache[src] = new Promise((res,rej)=>{
+    const sc = document.createElement('script');
+    sc.src = src;
+    sc.onload = res;
+    sc.onerror = ()=>{ delete scriptCache[src]; sc.remove(); rej(new Error('script load failed')); };
+    document.head.appendChild(sc);
+  });
+  return scriptCache[src];
+}
+function decodeTIFF(file){
+  return loadScript('https://cdn.jsdelivr.net/npm/utif@3.1.0/UTIF.min.js')
+    .then(()=> file.arrayBuffer())
+    .then(buf=>{
+      const ifds = UTIF.decode(buf);
+      if(!ifds.length) throw new Error('no image');
+      UTIF.decodeImage(buf, ifds[0]);
+      const rgba = UTIF.toRGBA8(ifds[0]);
+      const c = document.createElement('canvas');
+      c.width = ifds[0].width; c.height = ifds[0].height;
+      c.getContext('2d').putImageData(
+        new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.length), c.width, c.height), 0, 0);
+      placeImage(c.toDataURL('image/png'), c.width, c.height);
+    });
+}
+function decodeHEIC(file){
+  return loadScript('https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js')
+    .then(()=> heic2any({blob:file, toType:'image/png'}))
+    .then(blob=> new Promise((res, rej)=>{
+      const fr = new FileReader();
+      fr.onload = ()=>{
+        const img = new Image();
+        img.onload = ()=>{ placeImage(fr.result, img.naturalWidth, img.naturalHeight); res(); };
+        img.onerror = rej;
+        img.src = fr.result;
+      };
+      fr.onerror = rej;
+      fr.readAsDataURL(Array.isArray(blob) ? blob[0] : blob);
+    }));
+}
 function importImage(file){
+  const ext = ((file.name.match(/\.([^.]+)$/)||[])[1]||'').toLowerCase();
   const fr = new FileReader();
   fr.onload = ()=>{
     const src = fr.result;
     const img = new Image();
-    img.onload = ()=>{
-      const maxW = state.doc.w*0.8, maxH = state.doc.h*0.8;
-      let w = img.naturalWidth || 200, h = img.naturalHeight || 200;
-      const k = Math.min(1, maxW/w, maxH/h);
-      w *= k; h *= k;
-      pushHistory();
-      const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src});
-      state.shapes.push(s);
-      state.sel = new Set([s.id]);
-      render();
+    img.onload = ()=> placeImage(src, img.naturalWidth, img.naturalHeight);
+    img.onerror = ()=>{
+      // ブラウザが直接表示できない形式は変換を試みる（要ネット接続）
+      const fallback =
+        (ext==='tif'||ext==='tiff') ? decodeTIFF(file) :
+        (ext==='heic'||ext==='heif') ? decodeHEIC(file) :
+        Promise.reject(new Error('unsupported'));
+      fallback.catch(()=> alert('この画像形式を読み込めませんでした。\nPNG/JPEG/GIF/WebP/BMP/AVIF/SVG は直接、TIFF/HEIC はオンライン時に変換して取り込めます。'));
     };
-    img.onerror = ()=> alert('画像を読み込めませんでした。');
     img.src = src;
   };
   fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
@@ -2164,7 +2468,8 @@ function autosave(){
     try{
       localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({app:'vector-koubou', version:1,
         fname:$('fname').value, doc:state.doc, shapes:state.shapes, layers:state.layers,
-        activeLayer:state.activeLayer, idSeq, groupSeq, layerSeq, guides:state.guides}));
+        activeLayer:state.activeLayer, idSeq, groupSeq, layerSeq, guides:state.guides,
+        webFonts:state.webFonts, customFonts:state.customFonts}));
     }catch(err){ /* 容量超過などで保存できない場合も動作は継続する */ }
   }, 400);
 }
@@ -2181,6 +2486,9 @@ function restoreAutosave(){
     groupSeq = data.groupSeq || 1;
     layerSeq = data.layerSeq || (Math.max(0,...state.layers.map(l=>+String(l.id).replace(/\D/g,'')||0))+1);
     ensureLayers();
+    state.webFonts = Array.isArray(data.webFonts) ? data.webFonts : [];
+    state.customFonts = Array.isArray(data.customFonts) ? data.customFonts : [];
+    reloadFonts();
     if(data.fname) $('fname').value = data.fname;
     return true;
   }catch(err){ return false; }
@@ -2287,6 +2595,37 @@ $('chkGrid').onchange = e=>{ state.grid = e.target.checked; render(); };
 $('chkSnap').onchange = e=>{ state.snap = e.target.checked; };
 $('chkRuler').onchange = e=>{ state.ruler = e.target.checked; renderChrome(); };
 $('btnAddLayer').onclick = addLayer;
+$('fontInput').onchange = e=>{
+  const f = e.target.files[0];
+  e.target.value = '';
+  if(!f) return;
+  const fr = new FileReader();
+  fr.onload = ()=>{
+    const name = f.name.replace(/\.[^.]+$/,'');
+    registerCustomFont({name, data:fr.result}).then(()=>{
+      state.customFonts = state.customFonts || [];
+      if(!state.customFonts.find(c=>c.name===name)) state.customFonts.push({name, data:fr.result});
+      const one = selShapes()[0];
+      if(one && one.type==='text'){ pushHistory(); one.font = name; }
+      render();
+      $('hint').textContent = 'フォント「'+name+'」を読み込みました';
+    }).catch(()=> alert('フォントファイルを読み込めませんでした。'));
+  };
+  fr.onerror = ()=> alert('ファイルを読み込めませんでした。');
+  fr.readAsDataURL(f);
+};
+// 画像・SVG・JSONのドラッグ&ドロップ取り込み
+$('canvasWrap').addEventListener('dragover', e=> e.preventDefault());
+$('canvasWrap').addEventListener('drop', e=>{
+  e.preventDefault();
+  [...e.dataTransfer.files].forEach(importFile);
+});
+// iOS Safariのページ全体ピンチズームを抑止（キャンバス側で処理する）
+['gesturestart','gesturechange','gestureend'].forEach(t=>
+  document.addEventListener(t, e=> e.preventDefault()));
+// Webフォント読み込み完了時に再レイアウト（折返し計算がフォント寸法に依存するため）
+if(document.fonts && document.fonts.addEventListener)
+  document.fonts.addEventListener('loadingdone', ()=> render(true));
 
 /* ================= 起動 ================= */
 buildToolbar();
