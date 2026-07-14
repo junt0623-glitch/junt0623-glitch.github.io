@@ -109,6 +109,28 @@ input[type=range]{accent-color:var(--accent);}
 .cmykrow .cmyklab{min-width:0; color:var(--muted); font-size:10px; margin-left:3px;}
 .cmykrow input[type=number]{width:34px; padding:2px 3px;}
 
+/* ===== カラースウォッチ＆ドラッグ式ピッカー ===== */
+.swatch{position:relative; width:34px; height:24px; padding:0; border:1px solid var(--line);
+  border-radius:4px; overflow:hidden; cursor:pointer;
+  background-image:
+    linear-gradient(45deg,#bbb 25%,transparent 25%),
+    linear-gradient(-45deg,#bbb 25%,transparent 25%),
+    linear-gradient(45deg,transparent 75%,#bbb 75%),
+    linear-gradient(-45deg,transparent 75%,#bbb 75%);
+  background-size:10px 10px; background-position:0 0,0 5px,5px -5px,-5px 0px; background-color:#fff;}
+.swatch:disabled{cursor:default; opacity:.5;}
+.swatch .swatch-fill{position:absolute; inset:0;}
+.colorpop{position:fixed; z-index:60; background:var(--panel2); border:1px solid var(--line);
+  border-radius:6px; padding:10px; box-shadow:0 8px 24px rgba(0,0,0,.5); width:176px;}
+.cp-sv{position:relative; width:100%; height:120px; border-radius:4px; cursor:crosshair; margin-bottom:10px; touch-action:none;}
+.cp-hue{position:relative; width:100%; height:14px; border-radius:7px; cursor:pointer; margin-bottom:10px; touch-action:none;
+  background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00);}
+.cp-thumb{position:absolute; width:14px; height:14px; border-radius:50%; border:2px solid #fff;
+  box-shadow:0 0 0 1px rgba(0,0,0,.5); transform:translate(-50%,-50%); pointer-events:none; top:50%;}
+.cp-hexrow{display:flex; align-items:center; gap:4px;}
+.cp-hexrow span{color:var(--muted);}
+.cp-hexrow input{flex:1; text-transform:uppercase;}
+
 /* ===== ステータスバー ===== */
 #status{flex:0 0 auto; display:flex; gap:16px; padding:4px 12px; background:var(--panel);
   border-top:1px solid var(--line); color:var(--muted); font-size:11px;}
@@ -201,7 +223,7 @@ const state = {
   grid: false, snap: false, gridSize: 20,
   ruler: true, guides: {v:[], h:[]},
 };
-const styleNow = {fill:'#d8d1c2', stroke:'#33312e', strokeWidth:2, opacity:1};
+const styleNow = {fill:'#d8d1c2', stroke:'#33312e', strokeWidth:2, opacity:1, fillAlpha:1, strokeAlpha:1};
 let idSeq = 1;
 let groupSeq = 1;
 let layerSeq = 1;
@@ -255,6 +277,99 @@ function cmykToHex(c,m,y,k){
   c=clamp(c,0,100)/100; m=clamp(m,0,100)/100; y=clamp(y,0,100)/100; k=clamp(k,0,100)/100;
   return rgbToHex(255*(1-c)*(1-k), 255*(1-m)*(1-k), 255*(1-y)*(1-k));
 }
+function hexToHsv(hex){
+  const {r,g,b} = hexToRgb(hex);
+  const r1=r/255, g1=g/255, b1=b/255;
+  const max=Math.max(r1,g1,b1), min=Math.min(r1,g1,b1), d=max-min;
+  let h=0;
+  if(d){
+    if(max===r1) h=60*(((g1-b1)/d)%6);
+    else if(max===g1) h=60*((b1-r1)/d+2);
+    else h=60*((r1-g1)/d+4);
+  }
+  if(h<0) h+=360;
+  return {h, s:max?d/max*100:0, v:max*100};
+}
+function hsvToHex(h,s,v){
+  s/=100; v/=100;
+  const c=v*s, x=c*(1-Math.abs((h/60)%2-1)), m=v-c;
+  let r1,g1,b1;
+  if(h<60)[r1,g1,b1]=[c,x,0];
+  else if(h<120)[r1,g1,b1]=[x,c,0];
+  else if(h<180)[r1,g1,b1]=[0,c,x];
+  else if(h<240)[r1,g1,b1]=[0,x,c];
+  else if(h<300)[r1,g1,b1]=[x,0,c];
+  else [r1,g1,b1]=[c,0,x];
+  return rgbToHex((r1+m)*255, (g1+m)*255, (b1+m)*255);
+}
+
+/* ---- ドラッグ操作可能なカラーピッカー（彩度・明度・色相） ---- */
+let colorPop = null;
+function closeColorPop(){
+  if(!colorPop) return;
+  colorPop.el.remove();
+  document.removeEventListener('pointerdown', colorPop.outside, true);
+  colorPop = null;
+}
+function openColorPicker(anchor, hex, onLive){
+  closeColorPop();
+  const hsv = hexToHsv(hex==='none' ? '#000000' : hex);
+  const pop = document.createElement('div');
+  pop.className = 'colorpop';
+  pop.innerHTML = `<div class="cp-sv"><div class="cp-thumb"></div></div>
+    <div class="cp-hue"><div class="cp-thumb"></div></div>
+    <div class="cp-hexrow"><span>#</span><input type="text" class="cp-hex" maxlength="6"></div>`;
+  document.body.appendChild(pop);
+  const ar = anchor.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  let left = ar.left, top = ar.bottom+4;
+  if(left+pr.width > innerWidth-8) left = innerWidth-pr.width-8;
+  if(top+pr.height > innerHeight-8) top = ar.top-pr.height-4;
+  pop.style.left = left+'px'; pop.style.top = top+'px';
+
+  const sv = pop.querySelector('.cp-sv'), svT = sv.querySelector('.cp-thumb');
+  const hue = pop.querySelector('.cp-hue'), hueT = hue.querySelector('.cp-thumb');
+  const hexInput = pop.querySelector('.cp-hex');
+
+  function paint(){
+    sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), hsl(${fmt(hsv.h)}, 100%, 50%)`;
+    svT.style.left = hsv.s+'%'; svT.style.top = (100-hsv.v)+'%';
+    hueT.style.left = (hsv.h/360*100)+'%';
+    hexInput.value = hsvToHex(hsv.h,hsv.s,hsv.v).slice(1).toUpperCase();
+  }
+  paint();
+  function commit(){ onLive(hsvToHex(hsv.h,hsv.s,hsv.v)); paint(); }
+
+  function dragOn(el, handler){
+    el.addEventListener('pointerdown', e=>{
+      e.preventDefault();
+      el.setPointerCapture(e.pointerId);
+      const move = ev=>{ handler(ev); commit(); };
+      move(e);
+      el.addEventListener('pointermove', move);
+      el.addEventListener('pointerup', ()=> el.removeEventListener('pointermove', move), {once:true});
+    });
+  }
+  dragOn(sv, e=>{
+    const b = sv.getBoundingClientRect();
+    hsv.s = clamp((e.clientX-b.left)/b.width, 0, 1)*100;
+    hsv.v = (1-clamp((e.clientY-b.top)/b.height, 0, 1))*100;
+  });
+  dragOn(hue, e=>{
+    const b = hue.getBoundingClientRect();
+    hsv.h = clamp((e.clientX-b.left)/b.width, 0, 1)*360;
+  });
+  hexInput.onchange = ()=>{
+    const v = hexInput.value.trim();
+    if(/^[0-9a-fA-F]{3}$|^[0-9a-fA-F]{6}$/.test(v)){
+      const h2 = hexToHsv('#'+v);
+      hsv.h=h2.h; hsv.s=h2.s; hsv.v=h2.v;
+      commit();
+    }else paint();
+  };
+  colorPop = {el:pop, outside: e=>{ if(!pop.contains(e.target) && !anchor.contains(e.target)) closeColorPop(); }};
+  setTimeout(()=> document.addEventListener('pointerdown', colorPop.outside, true), 0);
+}
 
 /* ---- 上位レイヤー ---- */
 function newLayer(name){
@@ -300,7 +415,8 @@ function newShape(type, extra){
   const s = Object.assign({
     id: idSeq++, type, name: '', layerId: state.activeLayer,
     fill: styleNow.fill, stroke: styleNow.stroke, strokeWidth: styleNow.strokeWidth,
-    opacity: styleNow.opacity, rotation: 0, visible: true, locked: false,
+    opacity: styleNow.opacity, fillAlpha: styleNow.fillAlpha, strokeAlpha: styleNow.strokeAlpha,
+    rotation: 0, visible: true, locked: false,
   }, extra);
   if(!s.name) s.name = (typeNames[s.star ? 'star' : type] || type) + ' ' + s.id;
   return s;
@@ -426,12 +542,14 @@ function shapeEl(s, live){
     el.setAttribute('fill','none');
   }else if(s.type!=='line' && s.type!=='image'){
     el.setAttribute('fill', typeof s.fill==='object' ? `url(#${gradientId(s)})` : s.fill);
+    if(s.fill!=='none' && s.fillAlpha<1) el.setAttribute('fill-opacity', s.fillAlpha);
   }
   if(s.stroke!=='none' && s.strokeWidth>0 && s.type!=='image'){
     el.setAttribute('stroke', s.stroke);
     el.setAttribute('stroke-width', s.strokeWidth);
     el.setAttribute('stroke-linecap','round');
     el.setAttribute('stroke-linejoin','round');
+    if(s.strokeAlpha<1) el.setAttribute('stroke-opacity', s.strokeAlpha);
     if(s.dash==='dash') el.setAttribute('stroke-dasharray', `${s.strokeWidth*3} ${s.strokeWidth*2}`);
     else if(s.dash==='dot') el.setAttribute('stroke-dasharray', `0.1 ${s.strokeWidth*2}`);
     if(s.type==='line' || (s.type==='path' && !s.closed)){
@@ -1224,26 +1342,28 @@ function openTextEditor(s){
 /* ================= プロパティパネル ================= */
 function propRow(html){ return `<div class="prow">${html}</div>`; }
 function numIn(id,label,val,step){ return propRow(`<label>${label}</label><input type="number" id="${id}" value="${fmt(val)}" step="${step||1}">`); }
-function colorIn(id,label,val){
-  const none = val==='none';
-  return propRow(`<label>${label}</label>
-    <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
-    <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`);
+/* 色スウォッチ（クリックでドラッグ式ピッカーを開く）＋CMYK数値入力＋不透明度 */
+function swatchHTML(id, hex, disabled){
+  return `<button type="button" class="swatch" id="${id}Swatch" ${disabled?'disabled':''}>
+    <span class="swatch-fill" style="background:${esc(hex)}"></span></button>`;
 }
-/* 色ピッカー＋CMYK 数値入力 */
-function colorInCMYK(id,label,val){
+function colorInCMYK(id,label,val,alpha){
   const none = val==='none';
   const cm = none ? {c:0,m:0,y:0,k:0} : rgbToCmyk(hexToRgb(val).r, hexToRgb(val).g, hexToRgb(val).b);
   const dis = none ? 'disabled' : '';
-  return propRow(`<label>${label}</label>
-    <input type="color" id="${id}" value="${none?'#000000':val}" ${none?'disabled':''}>
-    <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`)
-    + `<div class="prow cmykrow">
+  let html = propRow(`<label>${label}</label>
+    ${swatchHTML(id, none?'#000000':val, none)}
+    <label class="toggle"><input type="checkbox" id="${id}None" ${none?'checked':''}>なし</label>`);
+  html += `<div class="prow cmykrow">
       <span class="cmyklab">C</span><input type="number" id="${id}C" min="0" max="100" value="${cm.c}" ${dis}>
       <span class="cmyklab">M</span><input type="number" id="${id}M" min="0" max="100" value="${cm.m}" ${dis}>
       <span class="cmyklab">Y</span><input type="number" id="${id}Y" min="0" max="100" value="${cm.y}" ${dis}>
       <span class="cmyklab">K</span><input type="number" id="${id}K" min="0" max="100" value="${cm.k}" ${dis}>
     </div>`;
+  if(alpha!==undefined){
+    html += propRow(`<label>不透明</label><input type="range" id="${id}Alpha" min="0" max="1" step="0.01" value="${alpha}" ${none?'disabled':''} style="flex:1"><span id="${id}AlphaVal">${Math.round(alpha*100)}%</span>`);
+  }
+  return html;
 }
 function fillTypeOf(v){ return (v && typeof v==='object') ? v.type : 'solid'; }
 function fillPanel(one){
@@ -1255,14 +1375,15 @@ function fillPanel(one){
       <option value="radial" ${type==='radial'?'selected':''}>放射グラデーション</option>
     </select></div>`;
   if(type==='solid'){
-    html += colorInCMYK('pFill','　', v);
+    html += colorInCMYK('pFill','　', v, one.fillAlpha);
   }else{
     const stops = v.stops || [{offset:0,color:'#d8d1c2'},{offset:1,color:'#33312e'}];
-    html += propRow(`<label>色1</label><input type="color" id="pGrad0" value="${stops[0].color}">
-      <label>色2</label><input type="color" id="pGrad1" value="${stops[1].color}">`);
+    html += propRow(`<label>色1</label>${swatchHTML('pGrad0', stops[0].color)}
+      <label>色2</label>${swatchHTML('pGrad1', stops[1].color)}`);
     if(type==='linear'){
       html += propRow(`<label>角度</label><input type="range" id="pGradAngle" min="0" max="360" value="${v.angle||0}" style="flex:1"><span id="pGradAngleVal">${v.angle||0}°</span>`);
     }
+    html += propRow(`<label>不透明</label><input type="range" id="pFillAlpha" min="0" max="1" step="0.01" value="${one.fillAlpha}" style="flex:1"><span id="pFillAlphaVal">${Math.round(one.fillAlpha*100)}%</span>`);
   }
   return html;
 }
@@ -1283,15 +1404,19 @@ function bindFillPanel(one){
     render();
   };
   if(fillTypeOf(one.fill)==='solid'){
-    bindColorCMYK('pFill','fill');
+    bindColorCMYK('pFill','fill','fillAlpha');
   }else{
-    const pg0 = $('pGrad0'), pg1 = $('pGrad1'), pga = $('pGradAngle');
-    pg0.oninput = ()=>{ pushHistory(); one.fill.stops[0].color = pg0.value; render(); };
-    pg1.oninput = ()=>{ pushHistory(); one.fill.stops[1].color = pg1.value; render(); };
+    const sw0 = $('pGrad0Swatch'), sw1 = $('pGrad1Swatch'), pga = $('pGradAngle');
+    const paintSwatch = (sw,hex)=> sw.querySelector('.swatch-fill').style.background = hex;
+    sw0.onclick = ()=>{ pushHistory(); openColorPicker(sw0, one.fill.stops[0].color, hex=>{ one.fill.stops[0].color=hex; paintSwatch(sw0,hex); updateGradientDefs(); }); };
+    sw1.onclick = ()=>{ pushHistory(); openColorPicker(sw1, one.fill.stops[1].color, hex=>{ one.fill.stops[1].color=hex; paintSwatch(sw1,hex); updateGradientDefs(); }); };
     if(pga){
+      pga.addEventListener('pointerdown', ()=> pushHistory());
       pga.oninput = ()=>{ one.fill.angle = +pga.value; $('pGradAngleVal').textContent = pga.value+'°'; updateGradientDefs(); };
-      pga.onchange = ()=>{ pushHistory(); render(); };
     }
+    const al = $('pFillAlpha'), alv = $('pFillAlphaVal');
+    al.addEventListener('pointerdown', ()=> pushHistory());
+    al.oninput = ()=>{ one.fillAlpha = +al.value; alv.textContent = Math.round(al.value*100)+'%'; render(true); };
   }
 }
 
@@ -1326,10 +1451,10 @@ function renderProps(){
   const isLine = one && one.type==='line';
   const isImage = one && one.type==='image';
   if(!isLine && !isImage){
-    html += one ? fillPanel(one) : colorInCMYK('pFill','塗り', styleNow.fill);
+    html += one ? fillPanel(one) : colorInCMYK('pFill','塗り', styleNow.fill, styleNow.fillAlpha);
   }
   if(!isImage){
-    html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke);
+    html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke, one ? one.strokeAlpha : styleNow.strokeAlpha);
     html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
     if(one){
       const canArrow = one.type==='line' || (one.type==='path' && !one.closed);
@@ -1417,8 +1542,8 @@ function renderProps(){
   op.onchange = ()=>{ pushHistory(); render(); };
 
   if(!isImage){
-    if(one) bindFillPanel(one); else bindColorCMYK('pFill','fill');
-    bindColorCMYK('pStroke','stroke');
+    if(one) bindFillPanel(one); else bindColorCMYK('pFill','fill','fillAlpha');
+    bindColorCMYK('pStroke','stroke','strokeAlpha');
     bindGeom('pSW', v=>{ const w=Math.max(0,v); selShapes().forEach(s=>s.strokeWidth=w); styleNow.strokeWidth=w; });
   }
 
@@ -1433,32 +1558,46 @@ function bind(id, fn){
   const input = $(id); if(!input) return;
   input.onchange = ()=>{ fn(input.value); render(); };
 }
-function bindColor(base, key){
-  const c = $(base), n = $(base+'None');
-  if(!c) return;
-  c.oninput = ()=>{ pushHistory(); selShapes().forEach(s=>s[key]=c.value); styleNow[key]=c.value; render(); };
+/* 色スウォッチ（ドラッグ式ピッカー）＋CMYK＋不透明度 を key に束縛 */
+function bindColorCMYK(base, key, alphaKey){
+  const sw = $(base+'Swatch'), n = $(base+'None');
+  if(!sw) return;
+  const curColor = ()=>{ const s = selShapes()[0]; return s ? s[key] : styleNow[key]; };
+  // スウォッチクリックでドラッグ式ピッカーを開く（セッション単位で1回だけ履歴を積む）
+  sw.onclick = ()=>{
+    if(sw.disabled) return;
+    pushHistory();
+    openColorPicker(sw, curColor()==='none' ? '#000000' : curColor(), hex=>{
+      selShapes().forEach(s=>s[key]=hex); styleNow[key]=hex;
+      sw.querySelector('.swatch-fill').style.background = hex;
+      render(true);
+    });
+  };
   n.onchange = ()=>{ pushHistory();
-    const v = n.checked ? 'none' : c.value;
+    const v = n.checked ? 'none' : (curColor()==='none' ? styleNow[key] : curColor());
     selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
-}
-/* 色ピッカー＋CMYK を key に束縛 */
-function bindColorCMYK(base, key){
-  const c = $(base), n = $(base+'None');
-  if(!c) return;
-  // ピッカー・「なし」操作はパネルを再構築（CMYK欄も新しい色に追従）
-  const applyFull = v=>{ pushHistory(); selShapes().forEach(s=>s[key]=v); styleNow[key]=v; render(); };
-  c.oninput = ()=> applyFull(c.value);
-  n.onchange = ()=> applyFull(n.checked ? 'none' : c.value);
   // CMYK欄の編集はパネルを再構築せず、入力値をそのまま保持（RGB往復による値の揺れを防ぐ）
   const cc=$(base+'C'), cm=$(base+'M'), cy=$(base+'Y'), ck=$(base+'K');
   const fromCMYK = ()=>{
     const hex = cmykToHex(+cc.value||0, +cm.value||0, +cy.value||0, +ck.value||0);
     pushHistory();
     selShapes().forEach(s=>s[key]=hex); styleNow[key]=hex;
-    c.value = hex;
+    sw.querySelector('.swatch-fill').style.background = hex;
     render(true);
   };
   [cc,cm,cy,ck].forEach(inp=>{ if(inp) inp.onchange = fromCMYK; });
+  if(alphaKey){
+    const al = $(base+'Alpha'), alv = $(base+'AlphaVal');
+    if(al){
+      al.addEventListener('pointerdown', ()=> pushHistory());
+      al.oninput = ()=>{
+        const v = +al.value;
+        selShapes().forEach(s=>s[alphaKey]=v); styleNow[alphaKey]=v;
+        if(alv) alv.textContent = Math.round(v*100)+'%';
+        render(true);
+      };
+    }
+  }
 }
 
 /* ================= 整列・重ね順 ================= */
@@ -1599,16 +1738,18 @@ function applyStyleFrom(src){
     pushHistory();
     targets.forEach(s=>{
       if(s.type==='image'){ s.opacity = src.opacity; return; }
-      s.stroke = src.stroke; s.strokeWidth = src.strokeWidth;
+      s.stroke = src.stroke; s.strokeWidth = src.strokeWidth; s.strokeAlpha = src.strokeAlpha;
       s.opacity = src.opacity; s.dash = src.dash;
       if(s.type!=='line' && src.type!=='line' && src.type!=='image' && src.fill!==undefined){
         s.fill = (src.fill && typeof src.fill==='object') ? JSON.parse(JSON.stringify(src.fill)) : src.fill;
+        s.fillAlpha = src.fillAlpha;
       }
     });
   }
   if(src.type!=='image'){
-    if(typeof src.fill==='string' && src.type!=='line') styleNow.fill = src.fill;
+    if(typeof src.fill==='string' && src.type!=='line'){ styleNow.fill = src.fill; styleNow.fillAlpha = src.fillAlpha; }
     styleNow.stroke = src.stroke; styleNow.strokeWidth = src.strokeWidth; styleNow.opacity = src.opacity;
+    styleNow.strokeAlpha = src.strokeAlpha;
   }
   render();
   $('hint').textContent = src.name + ' のスタイルを' + (targets.length ? '選択中の図形に適用しました' : '取得しました');
@@ -1616,8 +1757,9 @@ function applyStyleFrom(src){
 function syncStyleFromSel(){
   const s = selShapes()[0];
   if(!s) return;
-  if(s.type!=='line' && typeof s.fill==='string') styleNow.fill = s.fill;
+  if(s.type!=='line' && typeof s.fill==='string'){ styleNow.fill = s.fill; styleNow.fillAlpha = s.fillAlpha; }
   styleNow.stroke = s.stroke; styleNow.strokeWidth = s.strokeWidth; styleNow.opacity = s.opacity;
+  styleNow.strokeAlpha = s.strokeAlpha;
 }
 
 /* ================= 上位レイヤー操作 ================= */
