@@ -558,11 +558,43 @@ function dynamicDefStrings(){
   state.shapes.forEach(s=>{
     if(s.fill && typeof s.fill==='object') out.push(gradientDefString(s));
     if((s.arrowS||s.arrowE) && (s.type==='line'||(s.type==='path'&&!s.closed))) out.push(markerDefString(s));
+    if(isFrameShape(s) && s.text){
+      const b = geomBBox(s), pad = FRAME_TEXT_PAD;
+      out.push(`<clipPath id="clip${s.id}"><rect x="${fmt(b.x+pad)}" y="${fmt(b.y+pad)}" width="${fmt(Math.max(0,b.w-pad*2))}" height="${fmt(Math.max(0,b.h-pad*2))}"/></clipPath>`);
+    }
   });
   return out;
 }
 function updateGradientDefs(){
   $('gradDefs').innerHTML = dynamicDefStrings().join('');
+}
+
+/* ================= 図形の枠内テキスト（矩形・楕円・多角形） ================= */
+const FRAME_TEXT_PAD = 8;
+function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type==='poly'; }
+function frameTextEl(s){
+  const NS = 'http://www.w3.org/2000/svg';
+  const b = geomBBox(s), pad = FRAME_TEXT_PAD;
+  const boxW = Math.max(10, b.w - pad*2);
+  const size = s.size || 16;
+  const fake = {text:s.text, size, font:s.font||'sans-serif', bold:s.bold, boxW, justify:true};
+  const t = document.createElementNS(NS,'text');
+  const x = b.x + pad, y = b.y + pad + size*0.9;
+  t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
+  t.setAttribute('font-size', size);
+  t.setAttribute('font-family', fontFamilyAttr(fake.font));
+  if(fake.bold) t.setAttribute('font-weight','bold');
+  t.setAttribute('fill', s.textFill || '#111111');
+  t.setAttribute('clip-path', `url(#clip${s.id})`);
+  layoutText(fake).forEach((ln,i)=>{
+    const tp = document.createElementNS(NS,'tspan');
+    tp.setAttribute('x',fmt(x));
+    if(i>0) tp.setAttribute('dy','1.25em');
+    if(ln.ls) tp.setAttribute('letter-spacing', ln.ls);
+    tp.textContent = ln.text || ' ';
+    t.appendChild(tp);
+  });
+  return t;
 }
 
 function shapeEl(s, live){
@@ -637,17 +669,26 @@ function shapeEl(s, live){
       if(s.arrowE) el.setAttribute('marker-end', `url(#arw${s.id})`);
     }
   }
-  if(s.opacity < 1) el.setAttribute('opacity', s.opacity);
+  const hasFrameText = isFrameShape(s) && s.text;
+  let textEl = null, result = el;
+  if(hasFrameText){
+    textEl = frameTextEl(s);
+    result = document.createElementNS(NS,'g');
+    result.appendChild(el);
+    result.appendChild(textEl);
+  }
+  if(s.opacity < 1) result.setAttribute('opacity', s.opacity);
   if(s.rotation){
     const b = geomBBox(s);
-    el.setAttribute('transform', `rotate(${fmt(s.rotation)} ${fmt(b.x+b.w/2)} ${fmt(b.y+b.h/2)})`);
+    result.setAttribute('transform', `rotate(${fmt(s.rotation)} ${fmt(b.x+b.w/2)} ${fmt(b.y+b.h/2)})`);
   }
   if(live){
-    el.setAttribute('id','el-'+s.id);
-    el.dataset.id = s.id;
-    if(shapeLocked(s)) el.setAttribute('pointer-events','none');
+    result.setAttribute('id','el-'+s.id);
+    result.dataset.id = s.id;
+    if(hasFrameText){ el.dataset.id = s.id; textEl.dataset.id = s.id; }
+    if(shapeLocked(s)) result.setAttribute('pointer-events','none');
   }
-  return el;
+  return result;
 }
 
 /* ================= バウンディングボックス ================= */
@@ -1386,6 +1427,7 @@ function handleStageDbl(e){
   if(idAttr){
     const s = state.shapes.find(x=>x.id===+idAttr);
     if(s && s.type==='text'){ state.sel=new Set([s.id]); render(); openTextEditor(s); }
+    else if(s && isFrameShape(s)){ state.sel=new Set([s.id]); render(); openFrameTextEditor(s); }
   }
   if(state.tool==='pen' && pen && pen.pts.length>=2){ finishPen(false); render(); }
 }
@@ -1487,6 +1529,35 @@ function openTextEditor(s){
   ta.onkeydown = ev=>{
     ev.stopPropagation();
     if(ev.key==='Escape'){ ta.onblur=null; ed.style.display='none'; render(); }
+    if(ev.key==='Enter' && (ev.ctrlKey||ev.metaKey)) commit();
+  };
+}
+
+function openFrameTextEditor(s){
+  const ed = $('textEditor'), ta = $('textArea');
+  const b = geomBBox(s), pad = FRAME_TEXT_PAD;
+  const scr = toScreen({x:b.x+pad, y:b.y+pad});
+  const scrBR = toScreen({x:b.x+b.w-pad, y:b.y+b.h-pad});
+  ed.style.left = scr.x+'px'; ed.style.top = scr.y+'px'; ed.style.display = 'block';
+  ta.value = s.text || '';
+  ta.style.fontSize = Math.max(12, (s.size||16)*state.zoom)+'px';
+  ta.style.width = Math.max(40, scrBR.x-scr.x)+'px';
+  ta.style.height = Math.max(24, scrBR.y-scr.y)+'px';
+  ta.rows = 1;
+  ta.focus(); ta.select();
+  const commit = ()=>{
+    pushHistory();
+    s.text = ta.value || undefined;
+    if(s.text && !s.size) s.size = 16;
+    ed.style.display='none';
+    ta.style.width=''; ta.style.height='';
+    ta.onblur = null; ta.onkeydown = null;
+    render();
+  };
+  ta.onblur = commit;
+  ta.onkeydown = ev=>{
+    ev.stopPropagation();
+    if(ev.key==='Escape'){ ta.onblur=null; ed.style.display='none'; ta.style.width=''; ta.style.height=''; render(); }
     if(ev.key==='Enter' && (ev.ctrlKey||ev.metaKey)) commit();
   };
 }
@@ -1664,6 +1735,19 @@ function renderProps(){
         propRow(`<label class="toggle"><input type="checkbox" id="pSmooth" ${one.smooth?'checked':''}>曲線化</label>
                  <label class="toggle"><input type="checkbox" id="pClosed" ${one.closed?'checked':''}>閉じる</label>`) + `</div>`;
     }
+    if(isFrameShape(one)){
+      const builtinLabels = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
+      const fontList = ['sans-serif','serif','monospace',
+        ...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
+      html += `<div class="pgroup">` +
+        propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="2" style="flex:1" placeholder="枠内に表示するテキスト">${esc(one.text||'')}</textarea>`) +
+        numIn('pFrameSize','サイズ',one.size||16) +
+        propRow(`<label>書体</label><select id="pFrameFont" style="flex:1">` +
+          fontList.map(f=>`<option value="${esc(f)}" ${(one.font||'sans-serif')===f?'selected':''}>${esc(builtinLabels[f]||f)}</option>`).join('') +
+          `</select><label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
+        propRow(`<label>文字色</label><input type="color" id="pFrameColor" value="${one.textFill||'#111111'}">`) +
+        `</div>`;
+    }
     if(one.type==='text'){
       const builtinLabels = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
       const fontList = ['sans-serif','serif','monospace',
@@ -1716,6 +1800,11 @@ function renderProps(){
     bindGeom('pSides', v=>{ one.sides = clamp(Math.round(v),3,30); });
     bindGeom('pInner', v=>{ one.inner = clamp(v,0.05,0.95); });
     bindGeom('pSize', v=>{ one.size = Math.max(4,v); });
+    const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; render(); };
+    const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); render(); };
+    const pff2 = $('pFrameFont'); if(pff2) pff2.onchange = ()=>{ startEdit(); one.font = pff2.value; render(); };
+    const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; render(); };
+    const pfc = $('pFrameColor'); if(pfc) pfc.onchange = ()=>{ startEdit(); one.textFill = pfc.value; render(); };
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     const pf = $('pFont'); if(pf){ pf.value = one.font||'sans-serif'; pf.onchange = ()=>{ startEdit(); one.font = pf.value; render(); }; }
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
