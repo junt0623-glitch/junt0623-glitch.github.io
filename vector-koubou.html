@@ -1599,26 +1599,68 @@ function reloadFonts(){
 }
 
 /* フォント見本: 読み込み（読込ボタン）を押さなくても、選択・入力するだけで見た目を確認できる */
+const BUILTIN_FONTS = ['sans-serif','serif','monospace'];
+const BUILTIN_FONT_LABELS = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
+const POPULAR_FONTS = ['Noto Sans JP','Noto Serif JP','M PLUS 1p','M PLUS Rounded 1c','Zen Kaku Gothic New',
+  'Zen Maru Gothic','Zen Old Mincho','Kosugi Maru','Sawarabi Mincho','Sawarabi Gothic','Shippori Mincho',
+  'Kaisei Decol','Yusei Magic','DotGothic16','Klee One','RocknRoll One','Reggae One','Stick',
+  'Roboto','Open Sans','Lato','Montserrat','Oswald','Playfair Display','Lobster','Pacifico'];
+function isKnownFont(fam){
+  return BUILTIN_FONTS.includes(fam) || state.webFonts.includes(fam) || (state.customFonts||[]).some(c=>c.name===fam);
+}
 let fontPreviewTimer = null;
+function fontSampleText(one){
+  return (one.text && String(one.text).trim()) ? String(one.text).slice(0,30) : 'AaBbあ漢字123';
+}
 function setFontPreviewSample(fam, sampleText){
   const pv = $('pFontPreview'); if(!pv) return;
   pv.style.fontFamily = fontFamilyAttr(fam);
   pv.textContent = sampleText;
 }
+/* 「書体」セレクト: 組み込み・読み込み済み・未読込のGoogleフォント候補をひとつのプルダウンにまとめ、
+   未読込の候補を選ぶとその場で自動読込→適用まで行う（別途「読込」ボタンを押す必要がない） */
+function fontSelectHTML(id, one){
+  const loadedExtra = [...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
+  const popularRemaining = POPULAR_FONTS.filter(f=>!loadedExtra.includes(f));
+  let html = `<select id="${id}" style="flex:1"><optgroup label="組み込み">` +
+    BUILTIN_FONTS.map(f=>`<option value="${esc(f)}">${esc(BUILTIN_FONT_LABELS[f])}</option>`).join('') +
+    `</optgroup>`;
+  if(loadedExtra.length){
+    html += `<optgroup label="読み込み済み">` +
+      loadedExtra.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup>`;
+  }
+  html += `<optgroup label="Googleフォント（選択で自動読込）">` +
+    popularRemaining.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup></select>`;
+  return html;
+}
+function bindFontSelect(id, one){
+  const sel = $(id); if(!sel) return;
+  sel.value = one.font||'sans-serif';
+  sel.onchange = ()=>{
+    const val = sel.value;
+    if(isKnownFont(val)){ pushHistory(); one.font = val; render(); return; }
+    sel.disabled = true;
+    loadGoogleFont(val).then(fam=>{ pushHistory(); one.font = fam; render(); })
+      .catch(()=>{
+        sel.disabled = false; sel.value = one.font||'sans-serif';
+        setFontPreviewSample(one.font||'sans-serif', fontSampleText(one));
+        alert('フォントを読み込めませんでした。ネット接続を確認してください。');
+      });
+  };
+}
 function initFontPreview(one){
   const pv = $('pFontPreview'); if(!pv) return;
-  const sample = ()=> (one.text && String(one.text).trim()) ? String(one.text).slice(0,30) : 'AaBbあ漢字123';
-  setFontPreviewSample(one.font||'sans-serif', sample());
+  setFontPreviewSample(one.font||'sans-serif', fontSampleText(one));
   const selEl = $('pFont') || $('pFrameFont');
-  if(selEl) selEl.addEventListener('input', ()=> setFontPreviewSample(selEl.value, sample()));
+  if(selEl) selEl.addEventListener('input', ()=> setFontPreviewSample(selEl.value, fontSampleText(one)));
   const nameEl = $('pFontName');
   if(nameEl) nameEl.addEventListener('input', ()=>{
     const name = nameEl.value.trim();
     if(!name) return;
-    setFontPreviewSample(name, sample());
+    setFontPreviewSample(name, fontSampleText(one));
     clearTimeout(fontPreviewTimer);
     fontPreviewTimer = setTimeout(()=>{
-      loadGoogleFont(name).then(fam=> setFontPreviewSample(fam, sample())).catch(()=>{});
+      loadGoogleFont(name).then(fam=> setFontPreviewSample(fam, fontSampleText(one))).catch(()=>{});
     }, 400);
   });
 }
@@ -1763,15 +1805,11 @@ function renderProps(){
                  <label class="toggle"><input type="checkbox" id="pClosed" ${one.closed?'checked':''}>閉じる</label>`) + `</div>`;
     }
     if(isFrameShape(one)){
-      const builtinLabels = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
-      const fontList = ['sans-serif','serif','monospace',
-        ...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
       html += `<div class="pgroup">` +
         propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="2" style="flex:1" placeholder="枠内に表示するテキスト">${esc(one.text||'')}</textarea>`) +
         numIn('pFrameSize','サイズ',one.size||16) +
-        propRow(`<label>書体</label><select id="pFrameFont" style="flex:1">` +
-          fontList.map(f=>`<option value="${esc(f)}" ${(one.font||'sans-serif')===f?'selected':''}>${esc(builtinLabels[f]||f)}</option>`).join('') +
-          `</select><label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
+        propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', one)}` +
+          `<label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -1780,15 +1818,11 @@ function renderProps(){
         `</div>`;
     }
     if(one.type==='text'){
-      const builtinLabels = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
-      const fontList = ['sans-serif','serif','monospace',
-        ...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
       html += `<div class="pgroup">` +
         propRow(`<textarea id="pText" rows="2" style="flex:1">${esc(one.text)}</textarea>`) +
         numIn('pSize','サイズ',one.size) +
-        propRow(`<label>書体</label><select id="pFont" style="flex:1">` +
-          fontList.map(f=>`<option value="${esc(f)}">${esc(builtinLabels[f]||f)}</option>`).join('') +
-          `</select><label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
+        propRow(`<label>書体</label>${fontSelectHTML('pFont', one)}` +
+          `<label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -1834,11 +1868,11 @@ function renderProps(){
     bindGeom('pSize', v=>{ one.size = Math.max(4,v); });
     const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; render(); };
     const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); render(); };
-    const pff2 = $('pFrameFont'); if(pff2) pff2.onchange = ()=>{ startEdit(); one.font = pff2.value; render(); };
+    bindFontSelect('pFrameFont', one);
     const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; render(); };
     bindColorCMYK('pFrameColor','textFill');
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
-    const pf = $('pFont'); if(pf){ pf.value = one.font||'sans-serif'; pf.onchange = ()=>{ startEdit(); one.font = pf.value; render(); }; }
+    bindFontSelect('pFont', one);
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
     initFontPreview(one);
     const pfl = $('pFontLoad');
