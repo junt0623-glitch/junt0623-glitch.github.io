@@ -1633,19 +1633,26 @@ function fontSelectHTML(id, one){
     popularRemaining.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup></select>`;
   return html;
 }
+let fontSwitchSeq = 0;
 function bindFontSelect(id, one){
   const sel = $(id); if(!sel) return;
   sel.value = one.font||'sans-serif';
   sel.onchange = ()=>{
     const val = sel.value;
     if(isKnownFont(val)){ pushHistory(); one.font = val; render(); return; }
-    sel.disabled = true;
-    loadGoogleFont(val).then(fam=>{ pushHistory(); one.font = fam; render(); })
-      .catch(()=>{
-        sel.disabled = false; sel.value = one.font||'sans-serif';
-        setFontPreviewSample(one.font||'sans-serif', fontSampleText(one));
-        alert('フォントを読み込めませんでした。ネット接続を確認してください。');
-      });
+    // 読込中もセレクトは操作可能なままにし、続けて別の書体へすぐ切り替えられるようにする。
+    // 古い読込が後から完了しても、その間に選ばれた新しい書体を上書きしないよう世代番号で判定する。
+    const seq = ++fontSwitchSeq;
+    setFontPreviewSample(val, fontSampleText(one));
+    loadGoogleFont(val).then(fam=>{
+      if(seq !== fontSwitchSeq) return;
+      pushHistory(); one.font = fam; render();
+    }).catch(()=>{
+      if(seq !== fontSwitchSeq) return;
+      sel.value = one.font||'sans-serif';
+      setFontPreviewSample(one.font||'sans-serif', fontSampleText(one));
+      alert('フォントを読み込めませんでした。ネット接続を確認してください。');
+    });
   };
 }
 function initFontPreview(one){
@@ -1879,11 +1886,17 @@ function renderProps(){
     if(pfl) pfl.onclick = ()=>{
       const name = $('pFontName').value.trim();
       if(!name) return;
-      pfl.disabled = true; pfl.textContent = '…';
+      // ボタンは無効化しない: 読込中でも別の書体名にすぐ切り替えて再度読込できるようにする
+      const seq = ++fontSwitchSeq;
       loadGoogleFont(name)
-        .then(fam=>{ startEdit(); one.font = fam; render(); })
-        .catch(()=>{ pfl.disabled = false; pfl.textContent = '読込';
-          alert('フォントを読み込めませんでした。フォント名とネット接続を確認してください。'); });
+        .then(fam=>{
+          if(seq !== fontSwitchSeq) return;
+          startEdit(); one.font = fam; render();
+        })
+        .catch(()=>{
+          if(seq !== fontSwitchSeq) return;
+          alert('フォントを読み込めませんでした。フォント名とネット接続を確認してください。');
+        });
     };
     const pff = $('pFontFile'); if(pff) pff.onclick = ()=> $('fontInput').click();
     const pbw = $('pBoxW');
