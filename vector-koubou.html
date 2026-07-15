@@ -1745,6 +1745,9 @@ function renderProps(){
         propRow(`<label>書体</label><select id="pFrameFont" style="flex:1">` +
           fontList.map(f=>`<option value="${esc(f)}" ${(one.font||'sans-serif')===f?'selected':''}>${esc(builtinLabels[f]||f)}</option>`).join('') +
           `</select><label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
+        propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
+          <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
+          <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
         propRow(`<label>文字色</label><input type="color" id="pFrameColor" value="${one.textFill||'#111111'}">`) +
         `</div>`;
     }
@@ -2217,7 +2220,7 @@ function usedWebFonts(){
   const builtin = /^(sans-serif|serif|monospace)$/;
   const map = new Map();
   state.shapes.forEach(s=>{
-    if(shapeVisible(s) && s.type==='text' && s.font && !builtin.test(s.font)){
+    if(shapeVisible(s) && (s.type==='text' || isFrameShape(s)) && s.text && s.font && !builtin.test(s.font)){
       map.set(s.font, (map.get(s.font)||'') + s.text);
     }
   });
@@ -2695,7 +2698,7 @@ $('fontInput').onchange = e=>{
       state.customFonts = state.customFonts || [];
       if(!state.customFonts.find(c=>c.name===name)) state.customFonts.push({name, data:fr.result});
       const one = selShapes()[0];
-      if(one && one.type==='text'){ pushHistory(); one.font = name; }
+      if(one && (one.type==='text' || isFrameShape(one))){ pushHistory(); one.font = name; }
       render();
       $('hint').textContent = 'フォント「'+name+'」を読み込みました';
     }).catch(()=> alert('フォントファイルを読み込めませんでした。'));
