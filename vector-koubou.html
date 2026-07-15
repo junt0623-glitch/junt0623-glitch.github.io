@@ -80,6 +80,8 @@ input[type=range]{accent-color:var(--accent);}
 .prow{display:flex; align-items:center; gap:6px; margin-bottom:7px; flex-wrap:wrap;}
 .prow label{color:var(--muted); min-width:34px; font-size:11px;}
 .pgroup{border-top:1px dashed var(--line); margin-top:8px; padding-top:8px;}
+.fontpreview{flex:1; min-width:0; font-size:15px; padding:3px 6px; border:1px solid var(--line);
+  border-radius:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:var(--panel2);}
 .minibtns{display:flex; gap:4px; flex-wrap:wrap;}
 .minibtns button{padding:3px 6px; font-size:11px;}
 #layersWrap{flex:1 1 auto; display:flex; flex-direction:column; min-height:0;}
@@ -1596,6 +1598,31 @@ function reloadFonts(){
   (state.customFonts||[]).forEach(cf=> registerCustomFont(cf).then(()=>render(true)).catch(()=>{}));
 }
 
+/* フォント見本: 読み込み（読込ボタン）を押さなくても、選択・入力するだけで見た目を確認できる */
+let fontPreviewTimer = null;
+function setFontPreviewSample(fam, sampleText){
+  const pv = $('pFontPreview'); if(!pv) return;
+  pv.style.fontFamily = fontFamilyAttr(fam);
+  pv.textContent = sampleText;
+}
+function initFontPreview(one){
+  const pv = $('pFontPreview'); if(!pv) return;
+  const sample = ()=> (one.text && String(one.text).trim()) ? String(one.text).slice(0,30) : 'AaBbあ漢字123';
+  setFontPreviewSample(one.font||'sans-serif', sample());
+  const selEl = $('pFont') || $('pFrameFont');
+  if(selEl) selEl.addEventListener('input', ()=> setFontPreviewSample(selEl.value, sample()));
+  const nameEl = $('pFontName');
+  if(nameEl) nameEl.addEventListener('input', ()=>{
+    const name = nameEl.value.trim();
+    if(!name) return;
+    setFontPreviewSample(name, sample());
+    clearTimeout(fontPreviewTimer);
+    fontPreviewTimer = setTimeout(()=>{
+      loadGoogleFont(name).then(fam=> setFontPreviewSample(fam, sample())).catch(()=>{});
+    }, 400);
+  });
+}
+
 /* ================= プロパティパネル ================= */
 function propRow(html){ return `<div class="prow">${html}</div>`; }
 function numIn(id,label,val,step){ return propRow(`<label>${label}</label><input type="number" id="${id}" value="${fmt(val)}" step="${step||1}">`); }
@@ -1748,7 +1775,8 @@ function renderProps(){
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
-        propRow(`<label>文字色</label><input type="color" id="pFrameColor" value="${one.textFill||'#111111'}">`) +
+        propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
+        colorInCMYK('pFrameColor','文字色', one.textFill||'#111111') +
         `</div>`;
     }
     if(one.type==='text'){
@@ -1764,6 +1792,7 @@ function renderProps(){
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
+        propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
         propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" title="0で折り返しなし。単語を切らずに自動改行します">
           <label class="toggle" title="行末を枠に揃えるよう文字間を自動調整"><input type="checkbox" id="pJustify" ${one.justify!==false?'checked':''}>均等</label>`) + `</div>`;
     }
@@ -1807,10 +1836,11 @@ function renderProps(){
     const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); render(); };
     const pff2 = $('pFrameFont'); if(pff2) pff2.onchange = ()=>{ startEdit(); one.font = pff2.value; render(); };
     const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; render(); };
-    const pfc = $('pFrameColor'); if(pfc) pfc.onchange = ()=>{ startEdit(); one.textFill = pfc.value; render(); };
+    bindColorCMYK('pFrameColor','textFill');
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     const pf = $('pFont'); if(pf){ pf.value = one.font||'sans-serif'; pf.onchange = ()=>{ startEdit(); one.font = pf.value; render(); }; }
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
+    initFontPreview(one);
     const pfl = $('pFontLoad');
     if(pfl) pfl.onclick = ()=>{
       const name = $('pFontName').value.trim();
