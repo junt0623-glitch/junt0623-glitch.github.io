@@ -579,14 +579,27 @@ function buildTextLines(t, spec, x, y0, lines){
       const pre = ln.text.slice(0, rb.start);
       const base = ln.text.slice(rb.start, rb.start+rb.len);
       const preW = measureCtx.measureText(pre).width + ln.ls*pre.length;
-      const baseW = measureCtx.measureText(base).width + ln.ls*Math.max(0, base.length-1);
-      const rt = document.createElementNS(NS,'tspan');
-      rt.setAttribute('x', fmt(x + preW + baseW/2));
-      rt.setAttribute('y', fmt(y - size*0.85));
-      rt.setAttribute('font-size', fmt(size*0.5));
-      rt.setAttribute('text-anchor','middle');
-      rt.textContent = rb.r;
-      t.appendChild(rt);
+      const rubyY = y - size*0.85 - (+spec.rubyDy||0);
+      // ルビ内のスペース（半角・全角）区切りで基底1文字ずつに割り当てる（モノルビ）
+      const groups = rb.r.split(/[ 　]+/).filter(g=>g);
+      const targets = [];
+      if(groups.length > 1){
+        const chars = [...base];
+        chars.forEach((c,i)=>{ if(i < groups.length) targets.push({b:c, r:groups[i], pre:chars.slice(0,i).join('')}); });
+        if(groups.length > chars.length) targets[targets.length-1].r += groups.slice(chars.length).join('');
+      }else targets.push({b:base, r:rb.r, pre:''});
+      targets.forEach(tg=>{
+        const offW = measureCtx.measureText(tg.pre).width + ln.ls*tg.pre.length;
+        const baseW = measureCtx.measureText(tg.b).width + ln.ls*Math.max(0, tg.b.length-1);
+        const rt = document.createElementNS(NS,'tspan');
+        rt.setAttribute('x', fmt(x + preW + offW + baseW/2));
+        rt.setAttribute('y', fmt(rubyY));
+        rt.setAttribute('font-size', fmt(size*0.5));
+        rt.setAttribute('text-anchor','middle');
+        if(spec.rubyLS) rt.setAttribute('letter-spacing', spec.rubyLS);
+        rt.textContent = tg.r;
+        t.appendChild(rt);
+      });
     });
   });
 }
@@ -633,11 +646,11 @@ function frameTextEl(s){
   const boxW = Math.max(10, b.w - pad*2);
   const size = s.size || 16;
   const fake = {text:s.text, size, font:s.font||'sans-serif', bold:s.bold, boxW, justify:true,
-    ls:s.ls, lineH:s.lineH};
+    ls:s.ls, lineH:s.lineH, rubyLS:s.rubyLS, rubyDy:s.rubyDy};
   const t = document.createElementNS(NS,'text');
   const lines = layoutText(fake);
   // 先頭行にルビがある場合はクリップで欠けないよう開始位置を下げる
-  const rubyPad = (lines[0] && lines[0].ruby && lines[0].ruby.length) ? size*0.55 : 0;
+  const rubyPad = (lines[0] && lines[0].ruby && lines[0].ruby.length) ? size*0.55 + Math.max(0, +s.rubyDy||0) : 0;
   const x = b.x + pad, y = b.y + pad + size*0.9 + rubyPad;
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
   t.setAttribute('font-size', size);
@@ -1534,6 +1547,8 @@ function bboxTransform(s, o, ob, nb){
     case 'text':
       s.x=mx(o.x); s.y=my(o.y); s.size=Math.max(4, o.size*sy);
       if(o.ls) s.ls = o.ls*sy;   // 文字間はフォントサイズに追従
+      if(o.rubyLS) s.rubyLS = o.rubyLS*sy;
+      if(o.rubyDy) s.rubyDy = o.rubyDy*sy;
       // 横方向のリサイズは折返幅の設定・調整として扱う
       if(o.boxW) s.boxW = Math.max(10, o.boxW*sx);
       else if(Math.abs(sx-1)>0.001 && ob.w>1) s.boxW = Math.max(10, nb.w);
@@ -1811,7 +1826,8 @@ function renderProps(){
         ショートカット: V選択 Aノード R矩形 E楕円 L線 P多角形 S星 Nペン B鉛筆 Tテキスト Iスポイト H手のひら<br>
         Ctrl+Z 戻す / Ctrl+C→V コピー&貼り付け / Ctrl+G グループ化 / Del 削除 / 矢印キー 移動 / Ctrl+ホイール ズーム<br>
         定規の目盛りからドラッグでガイド線を作成（定規へ戻すと削除）<br>
-        テキストのルビ: 漢字《かんじ》 または ｜対象《るび》 と記述すると振り仮名を表示</div>`;
+        テキストのルビ: 漢字《かんじ》 または ｜対象《るび》 と記述すると振り仮名を表示。<br>
+        ルビをスペースで区切ると1文字ずつに割り当て（例: 漢字《かん じ》→ 漢=かん・字=じ）</div>`;
     bind('docW', v=>{state.doc.w=+v;}); bind('docH', v=>{state.doc.h=+v;});
     bind('docBg', v=>{state.doc.bg=v;}); bind('gridSize', v=>{state.gridSize=Math.max(2,+v);});
     return;
@@ -1863,6 +1879,8 @@ function renderProps(){
         numIn('pFrameSize','サイズ',one.size||16) +
         propRow(`<label>文字間</label><input type="number" id="pFrameLS" value="${fmt(one.ls||0)}" step="0.5" title="文字の間隔（px）。マイナスで詰める">
           <label>行間</label><input type="number" id="pFrameLineH" value="${fmt(one.lineH||1.25)}" step="0.05" min="0.5" title="行送り（フォントサイズ比）">`) +
+        propRow(`<label>ルビ間</label><input type="number" id="pFrameRubyLS" value="${fmt(one.rubyLS||0)}" step="0.5" title="ルビの文字間隔（px）">
+          <label>ルビ位置</label><input type="number" id="pFrameRubyDy" value="${fmt(one.rubyDy||0)}" step="1" title="ルビの上下位置（px、+で上へ）">`) +
         propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', one)}` +
           `<label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
@@ -1884,6 +1902,8 @@ function renderProps(){
         propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
         propRow(`<label>文字間</label><input type="number" id="pLS" value="${fmt(one.ls||0)}" step="0.5" title="文字の間隔（px）。マイナスで詰める">
           <label>行間</label><input type="number" id="pLineH" value="${fmt(one.lineH||1.25)}" step="0.05" min="0.5" title="行送り（フォントサイズ比）">`) +
+        propRow(`<label>ルビ間</label><input type="number" id="pRubyLS" value="${fmt(one.rubyLS||0)}" step="0.5" title="ルビの文字間隔（px）">
+          <label>ルビ位置</label><input type="number" id="pRubyDy" value="${fmt(one.rubyDy||0)}" step="1" title="ルビの上下位置（px、+で上へ）">`) +
         propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" title="0で折り返しなし。単語を切らずに自動改行します">
           <label class="toggle" title="行末を枠に揃えるよう文字間を自動調整"><input type="checkbox" id="pJustify" ${one.justify!==false?'checked':''}>均等</label>`) + `</div>`;
     }
@@ -1956,6 +1976,10 @@ function renderProps(){
     bindGeom('pLineH', v=>{ one.lineH = clamp(v,0.5,4); });
     bindGeom('pFrameLS', v=>{ one.ls = v ? clamp(v,-20,100) : undefined; });
     bindGeom('pFrameLineH', v=>{ one.lineH = clamp(v,0.5,4); });
+    bindGeom('pRubyLS', v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; });
+    bindGeom('pRubyDy', v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; });
+    bindGeom('pFrameRubyLS', v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; });
+    bindGeom('pFrameRubyDy', v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; });
     const psm = $('pSmooth'); if(psm) psm.onchange = ()=>{ startEdit(); one.smooth = psm.checked; render(); };
     const pcl = $('pClosed'); if(pcl) pcl.onchange = ()=>{ startEdit(); one.closed = pcl.checked; render(); };
     const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); one.dash = pd.value; render(); };
