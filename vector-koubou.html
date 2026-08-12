@@ -157,11 +157,21 @@ button,select,.tbtn{touch-action:manipulation;}
   <button id="btnSave">保存 (.json)</button>
   <div id="exportWrap" style="position:relative; display:inline-block;">
     <button id="btnExport" class="primary">書き出し ▾</button>
-    <div id="exportMenu" style="display:none; flex-direction:column; gap:2px; position:absolute; top:calc(100% + 2px); left:0; background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:4px; z-index:30; min-width:130px;">
+    <div id="exportMenu" style="display:none; flex-direction:column; gap:2px; position:absolute; top:calc(100% + 2px); left:0; background:var(--panel2); border:1px solid var(--line); border-radius:4px; padding:4px; z-index:30; min-width:190px;">
       <button data-fmt="svg" style="text-align:left; width:100%;">SVG (.svg)</button>
       <button data-fmt="png" style="text-align:left; width:100%;">PNG (.png)</button>
       <button data-fmt="jpeg" style="text-align:left; width:100%;">JPEG (.jpg)</button>
       <button data-fmt="pdf" style="text-align:left; width:100%;">PDF (.pdf)</button>
+      <label style="display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted); border-top:1px solid var(--line); margin-top:2px; padding-top:4px; white-space:nowrap;">解像度
+        <select id="expScale" style="flex:1" title="PNG/JPEG/PDF の書き出し倍率。数値が大きいほど高精細（ファイルも大きく）">
+          <option value="1">×1 (96dpi)</option>
+          <option value="2" selected>×2 (192dpi)</option>
+          <option value="3">×3 (288dpi)</option>
+          <option value="4">×4 (384dpi)</option>
+          <option value="6">×6 (576dpi)</option>
+          <option value="8">×8 (768dpi)</option>
+        </select></label>
+      <span id="expSizeHint" style="font-size:10px; color:var(--muted); padding:0 2px;"></span>
     </div>
   </div>
   <span class="sep"></span>
@@ -2414,6 +2424,27 @@ function exportSVG(){
   buildSVGStringWithFonts().then(svg=>
     download(fnameBase()+'.svg', new Blob([svg], {type:'image/svg+xml'})));
 }
+/* 書き出し倍率。ブラウザのcanvas上限（辺16384px・面積約2.68億px）を超えると
+   描画が空になるため、収まる範囲まで自動的に引き下げる */
+const CANVAS_MAX_SIDE = 16384, CANVAS_MAX_AREA = 268435456;
+function exportScale(){
+  const sel = $('expScale');
+  return clampExportScale(sel ? +sel.value || 2 : 2).scale;
+}
+function clampExportScale(scale){
+  const w = state.doc.w, h = state.doc.h;
+  let s = scale;
+  s = Math.min(s, CANVAS_MAX_SIDE/w, CANVAS_MAX_SIDE/h, Math.sqrt(CANVAS_MAX_AREA/(w*h)));
+  s = Math.max(0.1, Math.floor(s*100)/100);
+  return {scale: Math.min(scale, s), capped: s < scale};
+}
+function updateExportHint(){
+  const el = $('expSizeHint'); if(!el) return;
+  const sel = $('expScale'); const want = sel ? +sel.value || 2 : 2;
+  const {scale, capped} = clampExportScale(want);
+  const w = Math.round(state.doc.w*scale), h = Math.round(state.doc.h*scale);
+  el.textContent = `${w} × ${h} px` + (capped ? `（上限により×${scale}に縮小）` : '');
+}
 function rasterize(scale, forceOpaque, cb){
   buildSVGStringWithFonts().then(svg=> rasterizeSVG(svg, scale, forceOpaque, cb));
 }
@@ -2422,11 +2453,12 @@ function rasterizeSVG(svg, scale, forceOpaque, cb){
   const img = new Image();
   img.onload = ()=>{
     const c = document.createElement('canvas');
-    c.width = state.doc.w*scale; c.height = state.doc.h*scale;
+    c.width = Math.round(state.doc.w*scale); c.height = Math.round(state.doc.h*scale);
     const ctx = c.getContext('2d');
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     if(forceOpaque){ ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,c.width,c.height); }
-    ctx.scale(scale, scale);
-    ctx.drawImage(img, 0, 0);
+    // 幅・高さを明示してdrawImageさせる（倍率指定より端数に強い）
+    ctx.drawImage(img, 0, 0, c.width, c.height);
     URL.revokeObjectURL(url);
     cb(c);
   };
@@ -2434,17 +2466,17 @@ function rasterizeSVG(svg, scale, forceOpaque, cb){
   img.src = url;
 }
 function exportPNG(){
-  rasterize(2, false, c=> c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png'));
+  rasterize(exportScale(), false, c=> c.toBlob(b=> download(fnameBase()+'.png', b), 'image/png'));
 }
 function exportJPEG(){
-  rasterize(2, true, c=> c.toBlob(b=> download(fnameBase()+'.jpg', b), 'image/jpeg', 0.92));
+  rasterize(exportScale(), true, c=> c.toBlob(b=> download(fnameBase()+'.jpg', b), 'image/jpeg', 0.95));
 }
 function exportPDF(){
-  rasterize(2, true, c=> c.toBlob(b=>{
-    b.arrayBuffer().then(buf=> buildPDF(new Uint8Array(buf), c.width, c.height));
-  }, 'image/jpeg', 0.92));
+  rasterize(exportScale(), true, c=> c.toBlob(b=>{
+    b.arrayBuffer().then(buf=> buildPDF(new Uint8Array(buf), c.width, c.height, exportScale()));
+  }, 'image/jpeg', 0.95));
 }
-function buildPDF(jpegBytes, wPx, hPx){
+function buildPDF(jpegBytes, wPx, hPx, scale){
   const enc = new TextEncoder();
   const parts = [];
   let offset = 0;
@@ -2459,7 +2491,9 @@ function buildPDF(jpegBytes, wPx, hPx){
   addPart('%PDF-1.4\n');
   beginObj(1); addPart('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
   beginObj(2); addPart('<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
-  const wPt = fmt(wPx*72/96), hPt = fmt(hPx*72/96);
+  // 用紙サイズは倍率によらず一定に保ち、倍率は埋め込み画像の精細さ（実効dpi）として効かせる
+  const s = scale || 1;
+  const wPt = fmt(wPx/s*72/96), hPt = fmt(hPx/s*72/96);
   beginObj(3); addPart(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`);
   beginObj(4);
   addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
@@ -2825,7 +2859,11 @@ $('btnExport').onclick = e=>{
   e.stopPropagation();
   const m = $('exportMenu');
   m.style.display = (m.style.display==='flex') ? 'none' : 'flex';
+  if(m.style.display==='flex') updateExportHint();
 };
+$('expScale').onchange = updateExportHint;
+// 解像度の選択中にメニューが閉じないようにする
+$('exportMenu').onclick = e=> e.stopPropagation();
 document.addEventListener('click', ()=>{ $('exportMenu').style.display = 'none'; });
 $('exportMenu').querySelectorAll('[data-fmt]').forEach(btn=>{
   btn.onclick = ()=>{
