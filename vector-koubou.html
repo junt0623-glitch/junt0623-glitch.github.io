@@ -170,6 +170,7 @@ button,select,.tbtn{touch-action:manipulation;}
           <option value="4">×4 (384dpi)</option>
           <option value="6">×6 (576dpi)</option>
           <option value="8">×8 (768dpi)</option>
+          <option value="native">配置画像の原寸に合わせる</option>
         </select></label>
       <span id="expSizeHint" style="font-size:10px; color:var(--muted); padding:0 2px;"></span>
     </div>
@@ -1743,6 +1744,15 @@ function initFontPreview(one){
 }
 
 /* ================= プロパティパネル ================= */
+/* 印刷寸法。内部単位のpxは96dpi基準（1mm = 96/25.4 px）。
+   実際の印刷解像度は書き出し倍率で決まる（×4なら384dpi） */
+const PX_PER_MM = 96/25.4, DOC_MAX_MM = 1000;
+const DOC_MAX_PX = DOC_MAX_MM*PX_PER_MM;
+// pxは小数第2位まで保持する。整数に丸めるとmmとの往復で誤差が出て
+// 「最大1000mm」の指定が1000.1mmと表示されてしまうため
+function pxToMm(px){ return Math.round(px/PX_PER_MM*10)/10; }
+function mmToPx(mm){ return Math.round(clamp(+mm||1, 1, DOC_MAX_MM)*PX_PER_MM*100)/100; }
+function clampDocPx(px){ return Math.round(clamp(+px||1, 1, DOC_MAX_PX)*100)/100; }
 function propRow(html){ return `<div class="prow">${html}</div>`; }
 function numIn(id,label,val,step){ return propRow(`<label>${label}</label><input type="number" id="${id}" value="${fmt(val)}" step="${step||1}">`); }
 /* 色スウォッチ（クリックでドラッグ式ピッカーを開く）＋CMYK数値入力＋不透明度 */
@@ -1829,7 +1839,13 @@ function renderProps(){
   if(!ss.length){
     el.innerHTML =
       `<div class="prow" style="color:var(--muted)">アートボード設定</div>` +
-      numIn('docW','幅',state.doc.w) + numIn('docH','高さ',state.doc.h) +
+      // px欄は整数で表示（内部値はmm換算の小数を保つ。触らなければ変更されない）
+      numIn('docW','幅',Math.round(state.doc.w)) + numIn('docH','高さ',Math.round(state.doc.h)) +
+      propRow(`<label title="用紙の仕上がり寸法。最大 ${DOC_MAX_MM}×${DOC_MAX_MM}mm">印刷mm</label>
+        <input type="number" id="docWmm" value="${pxToMm(state.doc.w)}" min="1" max="${DOC_MAX_MM}" step="1" title="横（mm）">
+        <span style="color:var(--muted)">×</span>
+        <input type="number" id="docHmm" value="${pxToMm(state.doc.h)}" min="1" max="${DOC_MAX_MM}" step="1" title="縦（mm）">`) +
+      propRow(`<span style="font-size:10px; color:var(--muted)">用紙 ${pxToMm(state.doc.w)}×${pxToMm(state.doc.h)}mm（最大${DOC_MAX_MM}mm）。実際の印刷解像度は書き出し時の倍率で決まります</span>`) +
       propRow(`<label>背景</label><input type="color" id="docBg" value="${state.doc.bg==='none'?'#ffffff':state.doc.bg}">`) +
       numIn('gridSize','格子',state.gridSize) +
       `<div class="pgroup" style="color:var(--muted); font-size:11px; line-height:1.7">
@@ -1838,7 +1854,8 @@ function renderProps(){
         定規の目盛りからドラッグでガイド線を作成（定規へ戻すと削除）<br>
         テキストのルビ: 漢字《かんじ》 または ｜対象《るび》 と記述すると振り仮名を表示。<br>
         ルビをスペースで区切ると1文字ずつに割り当て（例: 漢字《かん じ》→ 漢=かん・字=じ）</div>`;
-    bind('docW', v=>{state.doc.w=+v;}); bind('docH', v=>{state.doc.h=+v;});
+    bind('docW', v=>{state.doc.w=clampDocPx(v);}); bind('docH', v=>{state.doc.h=clampDocPx(v);});
+    bind('docWmm', v=>{state.doc.w=mmToPx(v);}); bind('docHmm', v=>{state.doc.h=mmToPx(v);});
     bind('docBg', v=>{state.doc.bg=v;}); bind('gridSize', v=>{state.gridSize=Math.max(2,+v);});
     return;
   }
@@ -2427,9 +2444,22 @@ function exportSVG(){
 /* 書き出し倍率。ブラウザのcanvas上限（辺16384px・面積約2.68億px）を超えると
    描画が空になるため、収まる範囲まで自動的に引き下げる */
 const CANVAS_MAX_SIDE = 16384, CANVAS_MAX_AREA = 268435456;
+/* 配置画像を1画素も落とさずに書き出すのに必要な倍率。
+   Illustrator等の高精細画像を縮小配置しても、元の画素数を保ったまま出力できる */
+function nativeImageScale(){
+  let need = 1;
+  state.shapes.forEach(s=>{
+    if(s.type!=='image' || !shapeVisible(s) || !s.natW || !s.w) return;
+    need = Math.max(need, s.natW/s.w, (s.natH||0)/(s.h||1));
+  });
+  return Math.ceil(need*100)/100;
+}
 function exportScale(){
   const sel = $('expScale');
-  return clampExportScale(sel ? +sel.value || 2 : 2).scale;
+  return clampExportScale(requestedScale(sel ? sel.value : '2')).scale;
+}
+function requestedScale(v){
+  return v==='native' ? nativeImageScale() : (+v || 2);
 }
 function clampExportScale(scale){
   const w = state.doc.w, h = state.doc.h;
@@ -2440,10 +2470,17 @@ function clampExportScale(scale){
 }
 function updateExportHint(){
   const el = $('expSizeHint'); if(!el) return;
-  const sel = $('expScale'); const want = sel ? +sel.value || 2 : 2;
+  const sel = $('expScale');
+  const want = requestedScale(sel ? sel.value : '2');
   const {scale, capped} = clampExportScale(want);
   const w = Math.round(state.doc.w*scale), h = Math.round(state.doc.h*scale);
-  el.textContent = `${w} × ${h} px` + (capped ? `（上限により×${scale}に縮小）` : '');
+  let txt = `${w} × ${h} px / ${Math.round(96*scale)}dpi`;
+  if(sel && sel.value==='native') txt += `（画像原寸 ×${want}）`;
+  if(capped) txt += `（上限により×${scale}に縮小）`;
+  // 画像を縮小してしまう場合は警告
+  const need = nativeImageScale();
+  if(need > scale + 0.005) txt += ` ⚠ 配置画像が縮小されます（原寸には×${need}必要）`;
+  el.textContent = txt;
 }
 function rasterize(scale, forceOpaque, cb){
   buildSVGStringWithFonts().then(svg=> rasterizeSVG(svg, scale, forceOpaque, cb));
@@ -2526,6 +2563,7 @@ function openJSON(file){
       pushHistory();
       state.doc = data.doc || state.doc;
       state.shapes = data.shapes;
+      backfillImageNat();
       state.layers = Array.isArray(data.layers) ? data.layers : [];
       state.activeLayer = data.activeLayer || null;
       state.guides = data.guides || state.guides;
@@ -2552,13 +2590,24 @@ function importFile(file){
   else if(file.type==='application/json' || /\.json$/i.test(file.name)) openJSON(file);
   else importImage(file);
 }
+/* 旧バージョンで保存した画像には原寸情報が無いため、読み込み後に補う */
+function backfillImageNat(){
+  (state.shapes||[]).forEach(s=>{
+    if(s.type!=='image' || s.natW || !s.src) return;
+    const im = new Image();
+    im.onload = ()=>{ s.natW = im.naturalWidth; s.natH = im.naturalHeight; };
+    im.src = s.src;
+  });
+}
 function placeImage(src, natW, natH){
   const maxW = state.doc.w*0.8, maxH = state.doc.h*0.8;
   let w = natW || 200, h = natH || 200;
   const k = Math.min(1, maxW/w, maxH/h);
   w *= k; h *= k;
   pushHistory();
-  const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src});
+  // 元画像の画素数を保持し、書き出し時に必要な倍率を割り出せるようにする
+  const s = newShape('image', {x:(state.doc.w-w)/2, y:(state.doc.h-h)/2, w, h, src,
+    natW: natW || undefined, natH: natH || undefined});
   state.shapes.push(s);
   state.sel = new Set([s.id]);
   render();
@@ -2760,6 +2809,7 @@ function restoreAutosave(){
     if(!data || !Array.isArray(data.shapes) || !data.shapes.length) return false;
     state.doc = data.doc || state.doc;
     state.shapes = data.shapes;
+    backfillImageNat();
     state.layers = Array.isArray(data.layers) ? data.layers : [];
     state.activeLayer = data.activeLayer || null;
     state.guides = data.guides || {v:[], h:[]};
