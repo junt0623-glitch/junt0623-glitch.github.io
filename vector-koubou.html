@@ -9,6 +9,32 @@
   --ink:#17181c; --panel:#1f2127; --panel2:#25272e; --line:#2e313a;
   --text:#dcdee3; --muted:#8b909b; --accent:#d24a35; --accent-h:#e05a44;
   --canvas-bg:#2a2c33;
+  /* 書体スタック（キャプション工房と共通仕様）。端末に入っているものが先頭から自動採用される */
+  --mincho:"BIZ UDPMincho","BIZ UDPMincho Medium","BIZ UDMincho","BIZ UDMincho Medium","Hiragino Mincho ProN","YuMincho","Yu Mincho","Noto Serif JP","MS PMincho",serif;
+  --gothic:"BIZ UDPGothic","BIZ UDGothic","Hiragino Kaku Gothic ProN","Yu Gothic Medium","YuGothic","Yu Gothic","Noto Sans JP","Meiryo",sans-serif;
+  --ud-mincho:"BIZ UDPMincho","BIZ UDPMincho Medium","BIZ UDMincho","BIZ UDMincho Medium","UD デジタル 教科書体 NP","UDデジタル教科書体 NP","UD Digi Kyokasho NP","UD デジタル 教科書体 NK","UD Digi Kyokasho NK","UD デジタル 教科書体 N","UD Digi Kyokasho N","UD デジタル 教科書体 NP-R","UD デジタル教科書体 NP-R","Hiragino Mincho ProN","Noto Serif JP",serif;
+  --ud-gothic:"BIZ UDPGothic","BIZ UDGothic","UD デジタル 教科書体 NP","UDデジタル教科書体 NP","UD Digi Kyokasho NP","UD デジタル 教科書体 NK","UD Digi Kyokasho NK","UD デジタル 教科書体 N","UD Digi Kyokasho N","UD デジタル 教科書体 NP-R","UD デジタル教科書体 NP-R","Hiragino Sans","Yu Gothic Medium","Noto Sans JP",sans-serif;
+  --biz-mincho:"BIZ UDPMincho","BIZ UDPMincho Medium","BIZ UDMincho","BIZ UDMincho Medium",serif;
+  --biz-gothic:"BIZ UDPGothic","BIZ UDGothic","Meiryo",sans-serif;
+  --ud-kyokasho:"UD デジタル 教科書体 NP","UDデジタル教科書体 NP","UD Digi Kyokasho NP","UD デジタル 教科書体 NK","UD Digi Kyokasho NK","UD デジタル 教科書体 N","UD Digi Kyokasho N","UD デジタル 教科書体 NP-R","UDデジタル教科書体 NP-R","UD Digi Kyokasho NP-R","BIZ UDPMincho","BIZ UDPMincho Medium","BIZ UDMincho","BIZ UDMincho Medium",serif;
+  --ud-kyokasho-b:"UD デジタル 教科書体 NP","UDデジタル教科書体 NP","UD Digi Kyokasho NP","UD デジタル 教科書体 NP-B","UDデジタル教科書体 NP-B","UD Digi Kyokasho NP-B","BIZ UDPMincho","BIZ UDPMincho Medium",serif;
+  --kaisho:"HG正楷書体-PRO","HGP正楷書体","Kaisho","AR PL UKai TW","BIZ UDPMincho",serif;
+  --yu-mincho:"YuMincho","Yu Mincho","游明朝","BIZ UDPMincho",serif;
+  --hiragino-mincho:"Hiragino Mincho ProN","ヒラギノ明朝 ProN","BIZ UDPMincho",serif;
+  --ms-mincho:"MS PMincho","ＭＳ Ｐ明朝","MS Mincho",serif;
+  --yu-gothic:"Yu Gothic Medium","YuGothic","Yu Gothic","游ゴシック","BIZ UDPGothic",sans-serif;
+  --hiragino-gothic:"Hiragino Kaku Gothic ProN","ヒラギノ角ゴ ProN","BIZ UDPGothic",sans-serif;
+  --meiryo:"Meiryo","メイリオ","BIZ UDPGothic",sans-serif;
+  --ms-gothic:"MS PGothic","ＭＳ Ｐゴシック","MS Gothic",sans-serif;
+  --ms-ui-gothic:"MS UI Gothic","ＭＳ UI Gothic","MS PGothic",sans-serif;
+  --noto-serif-jp:"Noto Serif JP","BIZ UDPMincho",serif;
+  --noto-sans-jp:"Noto Sans JP","BIZ UDPGothic",sans-serif;
+  --en-sans:"Segoe UI","Helvetica Neue",Arial,sans-serif;
+  --en-serif:"Georgia","Times New Roman",serif;
+  --georgia:"Georgia",serif;
+  --times:"Times New Roman",serif;
+  --helvetica:"Helvetica Neue","Helvetica",Arial,sans-serif;
+  --segoe:"Segoe UI",sans-serif;
 }
 *{box-sizing:border-box; margin:0; padding:0;}
 html,body{height:100%; overflow:hidden; overscroll-behavior:none;}
@@ -80,6 +106,13 @@ input[type=range]{accent-color:var(--accent);}
 .prow{display:flex; align-items:center; gap:6px; margin-bottom:7px; flex-wrap:wrap;}
 .prow label{color:var(--muted); min-width:34px; font-size:11px;}
 .pgroup{border-top:1px dashed var(--line); margin-top:8px; padding-top:8px;}
+/* 数値調整（キャプション工房と共通仕様）: スライダーで即時反映し、値は等幅数字で右詰め表示 */
+.prow input[type=range]{flex:1; min-width:80px; accent-color:var(--accent);}
+.prow output{font-size:11px; color:var(--text); min-width:52px; text-align:right;
+  font-variant-numeric:tabular-nums;}
+.fontwarn{font-size:10px; line-height:1.6; color:#e8a33d; flex:1 1 100%;}
+.fontdiag{font-size:10px; line-height:1.7; color:var(--muted); flex:1 1 100%;
+  max-height:120px; overflow:auto;}
 .fontpreview{flex:1; min-width:0; font-size:15px; padding:3px 6px; border:1px solid var(--line);
   border-radius:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:var(--panel2);}
 .minibtns{display:flex; gap:4px; flex-wrap:wrap;}
@@ -493,8 +526,12 @@ function pathD(s){
 
 /* ================= テキストの自動折り返し・文字間調整 ================= */
 const measureCtx = document.createElement('canvas').getContext('2d');
+/* 書体キー（レジストリ）ならCSSスタックへ、それ以外は実ファミリ名として扱う。
+   旧データのfont（実ファミリ名や総称）もそのまま解決できる */
 function fontFamilyAttr(f){
   f = f || 'sans-serif';
+  const stack = (typeof FONTS!=='undefined' && FONTS[f]) ? FONTS[f].stack : null;
+  if(stack) return stack;
   return /^(sans-serif|serif|monospace)$/.test(f) ? f : '"'+f+'", sans-serif';
 }
 let wordSeg = null;
@@ -531,7 +568,7 @@ function tokenizeRuby(para){
   return out;
 }
 function layoutText(s){
-  measureCtx.font = `${s.bold?'bold ':''}${s.size}px ${fontFamilyAttr(s.font)}`;
+  measureCtx.font = `${(s.bold||fontWeightOf(s.font)===700)?'bold ':''}${s.size}px ${fontFamilyAttr(s.font)}`;
   const baseLS = +s.ls || 0;   // 文字間（ユーザー指定、px）
   const w = t => measureCtx.measureText(t).width + baseLS*t.length;
   const out = [];
@@ -578,7 +615,7 @@ function layoutText(s){
 function buildTextLines(t, spec, x, y0, lines){
   const NS = 'http://www.w3.org/2000/svg';
   const size = spec.size, lh = (spec.lineH || 1.25)*size;
-  measureCtx.font = `${spec.bold?'bold ':''}${size}px ${fontFamilyAttr(spec.font)}`;
+  measureCtx.font = `${(spec.bold||fontWeightOf(spec.font)===700)?'bold ':''}${size}px ${fontFamilyAttr(spec.font)}`;
   (lines || layoutText(spec)).forEach((ln,i)=>{
     const y = y0 + i*lh;
     const tp = document.createElementNS(NS,'tspan');
@@ -666,7 +703,7 @@ function frameTextEl(s){
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
   t.setAttribute('font-size', size);
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
-  if(fake.bold) t.setAttribute('font-weight','bold');
+  if(fake.bold || fontWeightOf(fake.font)) t.setAttribute('font-weight', fake.bold ? 'bold' : String(fontWeightOf(fake.font)));
   t.setAttribute('fill', s.textFill || '#111111');
   t.setAttribute('clip-path', `url(#clip${s.id})`);
   buildTextLines(t, fake, x, y, lines);
@@ -714,7 +751,7 @@ function shapeEl(s, live){
       el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
       el.setAttribute('font-size',s.size);
       el.setAttribute('font-family',fontFamilyAttr(s.font));
-      if(s.bold) el.setAttribute('font-weight','bold');
+      if(s.bold || fontWeightOf(s.font)) el.setAttribute('font-weight', s.bold ? 'bold' : String(fontWeightOf(s.font)));
       buildTextLines(el, s, s.x, s.y);
       break;
     }
@@ -1635,6 +1672,169 @@ function openFrameTextEditor(s){
   };
 }
 
+/* ================= 書体レジストリ（キャプション工房と共通仕様） =================
+   キー→{表示名, CSSフォントスタック, グループ, 太さ, オンライン取得名, 判定用実名}。
+   スタックは実ファミリ名を並べ、端末に入っているものが自動採用される。
+   gfを持つ書体は選択時にGoogle Fontsからオンデマンドで読み込む。 */
+function cssVar(n){ return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+const FONT_GROUP_ORDER = ['UD・視認性重視','明朝体','ゴシック体','オンラインフォント','英字','欧文（Windows標準）','汎用','読み込み済み'];
+let FONTS = {};
+function initFonts(){
+  FONTS = {
+    /* UD・視認性重視（最上位に表示） */
+    mincho:{label:'明朝体（UD対応・自動選択）',stack:cssVar('--mincho'),group:'UD・視認性重視'},
+    gothic:{label:'ゴシック体（UD対応・自動選択）',stack:cssVar('--gothic'),group:'UD・視認性重視'},
+    udmincho:{label:'UD明朝（自動選択）',stack:cssVar('--ud-mincho'),group:'UD・視認性重視'},
+    udgothic:{label:'UDゴシック（自動選択）',stack:cssVar('--ud-gothic'),group:'UD・視認性重視'},
+    bizmincho:{label:'BIZ UDP明朝',stack:cssVar('--biz-mincho'),group:'UD・視認性重視'},
+    bizgothic:{label:'BIZ UDPゴシック',stack:cssVar('--biz-gothic'),group:'UD・視認性重視'},
+    bizminchom:{label:'BIZ UD明朝（等幅）',stack:'"BIZ UDMincho","BIZ UDMincho Medium","BIZ UDPMincho",serif',group:'UD・視認性重視'},
+    bizgothicm:{label:'BIZ UDゴシック（等幅）',stack:'"BIZ UDGothic","BIZ UDPGothic","Meiryo",sans-serif',group:'UD・視認性重視'},
+    udkyokasho:{label:'UDデジタル教科書体（標準）',stack:cssVar('--ud-kyokasho'),group:'UD・視認性重視'},
+    udkyokashob:{label:'UDデジタル教科書体（太字）',stack:cssVar('--ud-kyokasho-b'),group:'UD・視認性重視',weight:700},
+    /* 明朝体 */
+    kaisho:{label:'楷書体',stack:cssVar('--kaisho'),group:'明朝体'},
+    yumincho:{label:'游明朝',stack:cssVar('--yu-mincho'),group:'明朝体'},
+    hiraginomincho:{label:'ヒラギノ明朝 ProN',stack:cssVar('--hiragino-mincho'),group:'明朝体'},
+    msmincho:{label:'MS明朝',stack:cssVar('--ms-mincho'),group:'明朝体'},
+    /* ゴシック体 */
+    yugothic:{label:'游ゴシック',stack:cssVar('--yu-gothic'),group:'ゴシック体'},
+    hiraginogothic:{label:'ヒラギノ角ゴ ProN',stack:cssVar('--hiragino-gothic'),group:'ゴシック体'},
+    meiryo:{label:'メイリオ',stack:cssVar('--meiryo'),group:'ゴシック体'},
+    msgothic:{label:'MSゴシック',stack:cssVar('--ms-gothic'),group:'ゴシック体'},
+    msuigothic:{label:'MS UI Gothic',stack:cssVar('--ms-ui-gothic'),group:'ゴシック体'},
+    yugothicui:{label:'游ゴシック UI',stack:'"Yu Gothic UI","Yu Gothic","YuGothic","Meiryo",sans-serif',group:'ゴシック体'},
+    meiryoui:{label:'メイリオ UI',stack:'"Meiryo UI","Meiryo","Yu Gothic",sans-serif',group:'ゴシック体'},
+    /* 和文名・欧文登録名の両方を並べる（OSやインストール方法でどちらの名で引けるかが変わるため） */
+    kiniro:{label:'GN-きんいろサンセリフ',stack:'"GN-きんいろサンセリフ","GN-Kin-iro_SansSerif","GN-Kin-iro SansSerif","GNきんいろサンセリフ","BIZ UDPGothic","Meiryo",sans-serif',group:'ゴシック体',
+      probe:['GN-きんいろサンセリフ','GN-Kin-iro_SansSerif','GN-Kin-iro SansSerif','GNきんいろサンセリフ']},
+    /* オンラインフォント（選ぶと自動でネットから読み込む。gf=Google Fonts APIのfamily指定） */
+    notoserif:{label:'Noto Serif JP（オンライン）',stack:cssVar('--noto-serif-jp'),group:'オンラインフォント',gf:'Noto+Serif+JP:wght@400;700',family:'Noto Serif JP'},
+    notosans:{label:'Noto Sans JP（オンライン）',stack:cssVar('--noto-sans-jp'),group:'オンラインフォント',gf:'Noto+Sans+JP:wght@400;700',family:'Noto Sans JP'},
+    zenoldmincho:{label:'Zen Old明朝（オンライン）',stack:'"Zen Old Mincho","BIZ UDPMincho",serif',group:'オンラインフォント',gf:'Zen+Old+Mincho:wght@400;700',family:'Zen Old Mincho'},
+    shipporimincho:{label:'しっぽり明朝（オンライン）',stack:'"Shippori Mincho","BIZ UDPMincho",serif',group:'オンラインフォント',gf:'Shippori+Mincho:wght@400;700',family:'Shippori Mincho'},
+    hinamincho:{label:'ひな明朝（オンライン）',stack:'"Hina Mincho","BIZ UDPMincho",serif',group:'オンラインフォント',gf:'Hina+Mincho',family:'Hina Mincho'},
+    sawarabimincho:{label:'さわらび明朝（オンライン）',stack:'"Sawarabi Mincho","BIZ UDPMincho",serif',group:'オンラインフォント',gf:'Sawarabi+Mincho',family:'Sawarabi Mincho'},
+    zenkakugothic:{label:'Zen角ゴシック New（オンライン）',stack:'"Zen Kaku Gothic New","BIZ UDPGothic",sans-serif',group:'オンラインフォント',gf:'Zen+Kaku+Gothic+New:wght@400;700',family:'Zen Kaku Gothic New'},
+    mplus1p:{label:'M PLUS 1p（オンライン）',stack:'"M PLUS 1p","BIZ UDPGothic",sans-serif',group:'オンラインフォント',gf:'M+PLUS+1p:wght@400;700',family:'M PLUS 1p'},
+    sawarabigothic:{label:'さわらびゴシック（オンライン）',stack:'"Sawarabi Gothic","BIZ UDPGothic",sans-serif',group:'オンラインフォント',gf:'Sawarabi+Gothic',family:'Sawarabi Gothic'},
+    zenmarugothic:{label:'Zen丸ゴシック（オンライン）',stack:'"Zen Maru Gothic","BIZ UDPGothic",sans-serif',group:'オンラインフォント',gf:'Zen+Maru+Gothic:wght@400;700',family:'Zen Maru Gothic'},
+    kosugimaru:{label:'小杉丸ゴシック（オンライン）',stack:'"Kosugi Maru","BIZ UDPGothic",sans-serif',group:'オンラインフォント',gf:'Kosugi+Maru',family:'Kosugi Maru'},
+    kleeone:{label:'クレー One・手書き風（オンライン）',stack:'"Klee One","UD デジタル 教科書体 NP",serif',group:'オンラインフォント',gf:'Klee+One:wght@400;600',family:'Klee One'},
+    yujisyuku:{label:'佑字 肅・毛筆風（オンライン）',stack:'"Yuji Syuku",serif',group:'オンラインフォント',gf:'Yuji+Syuku',family:'Yuji Syuku'},
+    kaiseidecol:{label:'Kaisei Decol・デザイン明朝（オンライン）',stack:'"Kaisei Decol",serif',group:'オンラインフォント',gf:'Kaisei+Decol:wght@400;700',family:'Kaisei Decol'},
+    yuseimagic:{label:'油性マジック風（オンライン）',stack:'"Yusei Magic",sans-serif',group:'オンラインフォント',gf:'Yusei+Magic',family:'Yusei Magic'},
+    rocknroll:{label:'RocknRoll One・ポップ（オンライン）',stack:'"RocknRoll One",sans-serif',group:'オンラインフォント',gf:'RocknRoll+One',family:'RocknRoll One'},
+    dotgothic:{label:'ドットゴシック16・レトロ（オンライン）',stack:'"DotGothic16",sans-serif',group:'オンラインフォント',gf:'DotGothic16',family:'DotGothic16'},
+    reggaeone:{label:'レゲエ One・極太（オンライン）',stack:'"Reggae One",sans-serif',group:'オンラインフォント',gf:'Reggae+One',family:'Reggae One'},
+    stick:{label:'ステッキ・角丸（オンライン）',stack:'"Stick",sans-serif',group:'オンラインフォント',gf:'Stick',family:'Stick'},
+    playfair:{label:'Playfair Display（オンライン）',stack:'"Playfair Display",serif',group:'オンラインフォント',gf:'Playfair+Display:wght@400;700',family:'Playfair Display'},
+    lobster:{label:'Lobster（オンライン）',stack:'"Lobster",cursive',group:'オンラインフォント',gf:'Lobster',family:'Lobster'},
+    pacifico:{label:'Pacifico（オンライン）',stack:'"Pacifico",cursive',group:'オンラインフォント',gf:'Pacifico',family:'Pacifico'},
+    roboto:{label:'Roboto（オンライン）',stack:'"Roboto",sans-serif',group:'オンラインフォント',gf:'Roboto:wght@400;700',family:'Roboto'},
+    montserrat:{label:'Montserrat（オンライン）',stack:'"Montserrat",sans-serif',group:'オンラインフォント',gf:'Montserrat:wght@400;700',family:'Montserrat'},
+    oswald:{label:'Oswald（オンライン）',stack:'"Oswald",sans-serif',group:'オンラインフォント',gf:'Oswald:wght@400;700',family:'Oswald'},
+    /* 英字 */
+    ensans:{label:'英字ゴシック（視認性）',stack:cssVar('--en-sans'),group:'英字'},
+    enserif:{label:'英字セリフ',stack:cssVar('--en-serif'),group:'英字'},
+    georgia:{label:'Georgia',stack:cssVar('--georgia'),group:'英字'},
+    times:{label:'Times New Roman',stack:cssVar('--times'),group:'英字'},
+    helvetica:{label:'Helvetica Neue',stack:cssVar('--helvetica'),group:'英字'},
+    segoe:{label:'Segoe UI',stack:cssVar('--segoe'),group:'英字'},
+    /* 欧文（Windows標準搭載。入っていない端末では近い代替書体で表示） */
+    winCambria:{label:'Cambria（欧文セリフ）',stack:'"Cambria",serif',group:'欧文（Windows標準）'},
+    winConstantia:{label:'Constantia（欧文セリフ）',stack:'"Constantia",serif',group:'欧文（Windows標準）'},
+    winPalatino:{label:'Palatino Linotype（欧文セリフ）',stack:'"Palatino Linotype",serif',group:'欧文（Windows標準）'},
+    winSitka:{label:'Sitka（欧文セリフ）',stack:'"Sitka Text","Sitka",serif',group:'欧文（Windows標準）'},
+    winArial:{label:'Arial',stack:'"Arial",sans-serif',group:'欧文（Windows標準）'},
+    winArialBlack:{label:'Arial Black（極太）',stack:'"Arial Black",sans-serif',group:'欧文（Windows標準）'},
+    winBahnschrift:{label:'Bahnschrift',stack:'"Bahnschrift",sans-serif',group:'欧文（Windows標準）'},
+    winCalibri:{label:'Calibri',stack:'"Calibri",sans-serif',group:'欧文（Windows標準）'},
+    winCandara:{label:'Candara',stack:'"Candara",sans-serif',group:'欧文（Windows標準）'},
+    winCorbel:{label:'Corbel',stack:'"Corbel",sans-serif',group:'欧文（Windows標準）'},
+    winFranklin:{label:'Franklin Gothic Medium',stack:'"Franklin Gothic Medium",sans-serif',group:'欧文（Windows標準）'},
+    winTahoma:{label:'Tahoma',stack:'"Tahoma",sans-serif',group:'欧文（Windows標準）'},
+    winTrebuchet:{label:'Trebuchet MS',stack:'"Trebuchet MS",sans-serif',group:'欧文（Windows標準）'},
+    winVerdana:{label:'Verdana',stack:'"Verdana",sans-serif',group:'欧文（Windows標準）'},
+    winConsolas:{label:'Consolas（等幅）',stack:'"Consolas",monospace',group:'欧文（Windows標準）'},
+    winCourier:{label:'Courier New（等幅）',stack:'"Courier New",monospace',group:'欧文（Windows標準）'},
+    winComic:{label:'Comic Sans MS（手書き風）',stack:'"Comic Sans MS",cursive',group:'欧文（Windows標準）'},
+    winSegoeScript:{label:'Segoe Script（筆記体）',stack:'"Segoe Script",cursive',group:'欧文（Windows標準）'},
+    winImpact:{label:'Impact（極太見出し）',stack:'"Impact",sans-serif',group:'欧文（Windows標準）'},
+    /* 汎用（旧データ互換。既存ファイルのfontはこの3種か実ファミリ名で保存されている） */
+    'sans-serif':{label:'ゴシック体（総称）',stack:'sans-serif',group:'汎用'},
+    'serif':{label:'明朝体（総称）',stack:'serif',group:'汎用'},
+    'monospace':{label:'等幅（総称）',stack:'monospace',group:'汎用'},
+  };
+}
+initFonts();
+function fontStack(key){ const f = FONTS[key]; return f ? f.stack : null; }
+/* 一部の書体は太さ指定を持つ。未インストール時のフォールバックでも太字で出す */
+function fontWeightOf(key){ return (FONTS[key] && FONTS[key].weight) || null; }
+/* オンライン書体のGoogle Fonts上のファミリ名（書き出し時の埋め込みに使う） */
+function fontFamilyName(key){
+  const f = FONTS[key];
+  if(f) return f.family || null;   // 実ファミリ名が確定しているのはオンライン書体のみ
+  return key;                      // レジストリ外＝ユーザーが読み込んだ実ファミリ名そのもの
+}
+const GENERIC_FAMS = ['serif','sans-serif','monospace','cursive','fantasy','system-ui',
+  'ui-serif','ui-sans-serif','ui-monospace','ui-rounded','inherit','initial'];
+/* 実フォントが端末に入っているか。総称と描画幅が変われば実フォントが効いている */
+function isFontAvailable(family){
+  if(!family) return false;
+  const name = String(family).replace(/["']/g,'').trim();
+  if(!name || GENERIC_FAMS.includes(name.toLowerCase())) return false;
+  const text = 'あぁ亜衣書体教科ABCgQ字0123', size = 72;
+  const ctx = document.createElement('canvas').getContext('2d');
+  const width = f =>{ ctx.font = size+'px '+f; return ctx.measureText(text).width; };
+  return ['monospace','sans-serif','serif'].some(g=>{
+    const base = width(g);
+    return Math.abs(width('"'+name+'",'+g) - base) > 0.5;
+  });
+}
+/* スタック文字列から、総称を除いた実ファミリ名の配列を返す */
+function stackFamilies(stack){
+  return String(stack||'').split(',').map(s=> s.trim().replace(/^["']|["']$/g,''))
+    .filter(s=> s && !GENERIC_FAMS.includes(s.toLowerCase()));
+}
+/* 選択中のシステム書体（オンライン以外）の実フォントが1つも見つからないか。
+   probeを持つ書体は、代替用に末尾へ並べた別書体を判定から除く（代替が見つかると警告が出なくなるため） */
+function selectedFontUnavailable(key){
+  const f = FONTS[key];
+  if(!f || f.gf) return false;                       // オンライン書体は取得されるので対象外
+  if(state.webFonts.includes(key)) return false;     // 読み込み済みの実フォント
+  if((state.customFonts||[]).some(c=>c.name===key)) return false;
+  const fams = f.probe ? f.probe.slice() : stackFamilies(f.stack);
+  return fams.length>0 && !fams.some(isFontAvailable);
+}
+/* オンライン書体のオンデマンド読み込み。明示的に選んだときだけ通信する */
+const gfLoaded = new Set();
+function ensureFontLoaded(key){
+  const f = FONTS[key];
+  if(!f || !f.gf) return Promise.resolve(key);
+  if(gfLoaded.has(key)) return Promise.resolve(key);
+  return new Promise(resolve=>{
+    gfLoaded.add(key);
+    const l = document.createElement('link');
+    l.rel = 'stylesheet';
+    l.href = 'https://fonts.googleapis.com/css2?family=' + f.gf + '&display=swap';
+    // フォント到着後に再描画（字形の寸法に依存する折返し計算をやり直すため）
+    l.onload = ()=>{
+      const done = ()=>{ render(true); resolve(key); };
+      if(document.fonts && document.fonts.ready) document.fonts.ready.then(done); else done();
+    };
+    l.onerror = ()=>{ gfLoaded.delete(key); l.remove(); resolve(key); };
+    document.head.appendChild(l);
+    setTimeout(()=> resolve(key), 8000);
+  });
+}
+/* データ中で使われているオンライン書体をまとめて読み込む（保存ファイルを開いたとき用） */
+function ensureProjectFonts(){
+  const keys = new Set();
+  (state.shapes||[]).forEach(s=>{ if(s.font) keys.add(s.font); });
+  keys.forEach(k=>{ if(FONTS[k] && FONTS[k].gf) ensureFontLoaded(k); });
+}
+
 /* ================= Webフォント（Google Fonts・フォントファイル） ================= */
 function loadGoogleFont(name){
   const fam = String(name||'').trim();
@@ -1670,14 +1870,8 @@ function reloadFonts(){
 }
 
 /* フォント見本: 読み込み（読込ボタン）を押さなくても、選択・入力するだけで見た目を確認できる */
-const BUILTIN_FONTS = ['sans-serif','serif','monospace'];
-const BUILTIN_FONT_LABELS = {'sans-serif':'ゴシック体', 'serif':'明朝体', 'monospace':'等幅'};
-const POPULAR_FONTS = ['Noto Sans JP','Noto Serif JP','M PLUS 1p','M PLUS Rounded 1c','Zen Kaku Gothic New',
-  'Zen Maru Gothic','Zen Old Mincho','Kosugi Maru','Sawarabi Mincho','Sawarabi Gothic','Shippori Mincho',
-  'Kaisei Decol','Yusei Magic','DotGothic16','Klee One','RocknRoll One','Reggae One','Stick',
-  'Roboto','Open Sans','Lato','Montserrat','Oswald','Playfair Display','Lobster','Pacifico'];
 function isKnownFont(fam){
-  return BUILTIN_FONTS.includes(fam) || state.webFonts.includes(fam) || (state.customFonts||[]).some(c=>c.name===fam);
+  return !!FONTS[fam] || state.webFonts.includes(fam) || (state.customFonts||[]).some(c=>c.name===fam);
 }
 let fontPreviewTimer = null;
 function fontSampleText(one){
@@ -1690,19 +1884,52 @@ function setFontPreviewSample(fam, sampleText){
 }
 /* 「書体」セレクト: 組み込み・読み込み済み・未読込のGoogleフォント候補をひとつのプルダウンにまとめ、
    未読込の候補を選ぶとその場で自動読込→適用まで行う（別途「読込」ボタンを押す必要がない） */
+/* 書体セレクト: レジストリをグループ順にoptgroupで並べ、末尾にユーザーが読み込んだ書体を足す */
 function fontSelectHTML(id, one){
-  const loadedExtra = [...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)];
-  const popularRemaining = POPULAR_FONTS.filter(f=>!loadedExtra.includes(f));
-  let html = `<select id="${id}" style="flex:1"><optgroup label="組み込み">` +
-    BUILTIN_FONTS.map(f=>`<option value="${esc(f)}">${esc(BUILTIN_FONT_LABELS[f])}</option>`).join('') +
-    `</optgroup>`;
+  const loadedExtra = [...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)]
+    .filter(f=> !FONTS[f]);
+  let html = `<select id="${id}" style="flex:1">`;
+  FONT_GROUP_ORDER.forEach(group=>{
+    const keys = Object.keys(FONTS).filter(k=> FONTS[k].group===group);
+    if(!keys.length) return;
+    html += `<optgroup label="${esc(group)}">` +
+      keys.map(k=>`<option value="${esc(k)}">${esc(FONTS[k].label)}</option>`).join('') +
+      `</optgroup>`;
+  });
   if(loadedExtra.length){
     html += `<optgroup label="読み込み済み">` +
       loadedExtra.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup>`;
   }
-  html += `<optgroup label="Googleフォント（選択で自動読込）">` +
-    popularRemaining.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup></select>`;
-  return html;
+  return html + `</select>`;
+}
+/* 選択中の書体が端末に無いときの警告と、候補フォントの診断表示 */
+function fontWarnHTML(){
+  return propRow(`<span id="pFontWarn" class="fontwarn" style="display:none"></span>`) +
+    propRow(`<button id="pFontCheck" title="選択中の書体の候補フォントが、この端末に入っているか調べます">書体診断</button>
+      <span id="pFontDiag" class="fontdiag" style="display:none"></span>`);
+}
+function updateFontMissingWarn(one){
+  const w = $('pFontWarn'); if(!w) return;
+  const key = one && one.font;
+  if(key && selectedFontUnavailable(key)){
+    const nm = (FONTS[key] && FONTS[key].label) || key;
+    w.style.display = '';
+    w.innerHTML = `⚠ この端末に「${esc(nm)}」の実フォントが見つかりません。近い代替書体で表示しています。` +
+      `同じ字形で出すには、その書体を入れた端末で開くか「オンラインフォント」をお使いください。`;
+  }else w.style.display = 'none';
+}
+function bindFontCheck(one){
+  const btn = $('pFontCheck'); if(!btn) return;
+  btn.onclick = ()=>{
+    const key = one.font || 'sans-serif', f = FONTS[key];
+    const out = $('pFontDiag');
+    const fams = f ? stackFamilies(f.stack) : stackFamilies('"'+key+'"');
+    const anyReal = fams.some(isFontAvailable);
+    out.style.display = '';
+    out.innerHTML = `<b>${esc((f&&f.label)||key)}</b> の候補フォント（この端末での判定）:<br>` +
+      fams.map(n=>`${isFontAvailable(n)?'✓ 利用可':'× なし'}：${esc(n)}`).join('<br>') +
+      `<br><b>→ ${anyReal?'実フォントで表示されています。':'実フォントは見つからず、総称による代替表示です。'}</b>`;
+  };
 }
 let fontSwitchSeq = 0;
 function bindFontSelect(id, one){
@@ -1710,6 +1937,13 @@ function bindFontSelect(id, one){
   sel.value = one.font||'sans-serif';
   sel.onchange = ()=>{
     const val = sel.value;
+    const f = FONTS[val];
+    // レジストリの書体: オンライン書体だけ取得が要る。取得を待たずに適用し、届いたら再描画する
+    if(f){
+      pushHistory(); one.font = val; render();
+      if(f.gf) ensureFontLoaded(val).then(()=> render(true));
+      return;
+    }
     if(isKnownFont(val)){ pushHistory(); one.font = val; render(); return; }
     // 読込中もセレクトは操作可能なままにし、続けて別の書体へすぐ切り替えられるようにする。
     // 古い読込が後から完了しても、その間に選ばれた新しい書体を上書きしないよう世代番号で判定する。
@@ -1754,7 +1988,34 @@ function pxToMm(px){ return Math.round(px/PX_PER_MM*10)/10; }
 function mmToPx(mm){ return Math.round(clamp(+mm||1, 1, DOC_MAX_MM)*PX_PER_MM*100)/100; }
 function clampDocPx(px){ return Math.round(clamp(+px||1, 1, DOC_MAX_PX)*100)/100; }
 function propRow(html){ return `<div class="prow">${html}</div>`; }
-function numIn(id,label,val,step){ return propRow(`<label>${label}</label><input type="number" id="${id}" value="${fmt(val)}" step="${step||1}">`); }
+/* 数値入力（キャプション工房と共通仕様）: 上下限と刻みを必ず与え、単位を併記する */
+function numIn(id,label,val,step,min,max,unit){
+  const lim = (min!==undefined?` min="${min}"`:'') + (max!==undefined?` max="${max}"`:'');
+  const u = unit ? `<span style="font-size:10px;color:var(--muted)">${unit}</span>` : '';
+  return propRow(`<label>${label}</label><input type="number" id="${id}" value="${fmt(val)}" step="${step||1}"${lim}>${u}`);
+}
+/* スライダー＋数値表示。ドラッグ中は即時反映し、値は等幅数字で右詰め表示する */
+function rangeIn(id,label,val,min,max,step,unit,title){
+  return propRow(`<label${title?` title="${esc(title)}"`:''}>${label}</label>` +
+    `<input type="range" id="${id}" min="${min}" max="${max}" step="${step}" value="${val}">` +
+    `<output id="${id}O">${fmt(val)}${unit||''}</output>`);
+}
+/* ドラッグ中はプロパティ欄を作り直さず（つかんだつまみが消えるため）、履歴は掴んだ時に一度だけ積む */
+function bindRange(id, fn, unit, decimals){
+  const el = $(id); if(!el) return;
+  const out = $(id+'O');
+  const show = v=> out && (out.textContent = (decimals!=null ? (+v).toFixed(decimals) : fmt(v)) + (unit||''));
+  // 1回の操作につき履歴は1件。連続したドラッグや矢印キー連打で履歴が埋まらないようにする
+  let dirty = false;
+  const begin = ()=>{ if(!dirty){ pushHistory(); dirty = true; } };
+  const end = ()=>{ dirty = false; };
+  el.addEventListener('pointerdown', begin);
+  el.addEventListener('keydown', e=>{ if(/^(Arrow|Page|Home|End)/.test(e.key)) begin(); });
+  el.addEventListener('pointerup', end);
+  el.addEventListener('blur', end);
+  el.addEventListener('change', end);
+  el.oninput = ()=>{ begin(); const v = +el.value; fn(v); show(v); render(true); };
+}
 /* 色スウォッチ（クリックでドラッグ式ピッカーを開く）＋CMYK数値入力＋不透明度 */
 function swatchHTML(id, hex, disabled){
   return `<button type="button" class="swatch" id="${id}Swatch" ${disabled?'disabled':''}>
@@ -1840,14 +2101,15 @@ function renderProps(){
     el.innerHTML =
       `<div class="prow" style="color:var(--muted)">アートボード設定</div>` +
       // px欄は整数で表示（内部値はmm換算の小数を保つ。触らなければ変更されない）
-      numIn('docW','幅',Math.round(state.doc.w)) + numIn('docH','高さ',Math.round(state.doc.h)) +
+      numIn('docW','幅',Math.round(state.doc.w),1,1,Math.round(DOC_MAX_PX),'px') +
+      numIn('docH','高さ',Math.round(state.doc.h),1,1,Math.round(DOC_MAX_PX),'px') +
       propRow(`<label title="用紙の仕上がり寸法。最大 ${DOC_MAX_MM}×${DOC_MAX_MM}mm">印刷mm</label>
         <input type="number" id="docWmm" value="${pxToMm(state.doc.w)}" min="1" max="${DOC_MAX_MM}" step="1" title="横（mm）">
         <span style="color:var(--muted)">×</span>
         <input type="number" id="docHmm" value="${pxToMm(state.doc.h)}" min="1" max="${DOC_MAX_MM}" step="1" title="縦（mm）">`) +
       propRow(`<span style="font-size:10px; color:var(--muted)">用紙 ${pxToMm(state.doc.w)}×${pxToMm(state.doc.h)}mm（最大${DOC_MAX_MM}mm）。実際の印刷解像度は書き出し時の倍率で決まります</span>`) +
       propRow(`<label>背景</label><input type="color" id="docBg" value="${state.doc.bg==='none'?'#ffffff':state.doc.bg}">`) +
-      numIn('gridSize','格子',state.gridSize) +
+      numIn('gridSize','格子',state.gridSize,1,2,500,'px') +
       `<div class="pgroup" style="color:var(--muted); font-size:11px; line-height:1.7">
         ショートカット: V選択 Aノード R矩形 E楕円 L線 P多角形 S星 Nペン B鉛筆 Tテキスト Iスポイト H手のひら<br>
         Ctrl+Z 戻す / Ctrl+C→V コピー&貼り付け / Ctrl+G グループ化 / Del 削除 / 矢印キー 移動 / Ctrl+ホイール ズーム<br>
@@ -1868,7 +2130,7 @@ function renderProps(){
   html += `<div class="prow">` +
     `<label>幅</label><input type="number" id="pW" value="${fmt(b.w)}">` +
     `<label>高さ</label><input type="number" id="pH" value="${fmt(b.h)}"></div>`;
-  if(one) html += numIn('pRot','回転',one.rotation||0);
+  if(one) html += rangeIn('pRot','回転',one.rotation||0,0,360,1,'°','図形の回転角');
   html += propRow(`<label>不透明</label><input type="range" id="pOp" min="0" max="1" step="0.05" value="${one?one.opacity:1}" style="flex:1">`);
   const isLine = one && one.type==='line';
   const isImage = one && one.type==='image';
@@ -1877,7 +2139,7 @@ function renderProps(){
   }
   if(!isImage){
     html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke, one ? one.strokeAlpha : styleNow.strokeAlpha);
-    html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5);
+    html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5, 0, 200, 'px');
     if(one){
       const canArrow = one.type==='line' || (one.type==='path' && !one.closed);
       html += propRow(`<label>線種</label><select id="pDash">
@@ -1890,10 +2152,10 @@ function renderProps(){
   }
 
   if(one){
-    if(one.type==='rect') html += `<div class="pgroup">` + numIn('pRx','角丸',one.rx||0) + `</div>`;
+    if(one.type==='rect') html += `<div class="pgroup">` + numIn('pRx','角丸',one.rx||0,1,0,2000,'px') + `</div>`;
     if(one.type==='poly'){
-      html += `<div class="pgroup">` + numIn('pSides','辺数',one.sides) +
-        (one.star ? numIn('pInner','内径比',one.inner,0.05) : '') + `</div>`;
+      html += `<div class="pgroup">` + numIn('pSides','辺数',one.sides,1,3,30,'角') +
+        (one.star ? rangeIn('pInner','内径比',one.inner,0.05,0.95,0.05,'','星の内側の半径比') : '') + `</div>`;
     }
     if(one.type==='path'){
       html += `<div class="pgroup">` +
@@ -1903,35 +2165,37 @@ function renderProps(){
     if(isFrameShape(one)){
       html += `<div class="pgroup">` +
         propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="2" style="flex:1" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text||'')}</textarea>`) +
-        numIn('pFrameSize','サイズ',one.size||16) +
-        propRow(`<label>文字間</label><input type="number" id="pFrameLS" value="${fmt(one.ls||0)}" step="0.5" title="文字の間隔（px）。マイナスで詰める">
-          <label>行間</label><input type="number" id="pFrameLineH" value="${fmt(one.lineH||1.25)}" step="0.05" min="0.5" title="行送り（フォントサイズ比）">`) +
-        propRow(`<label>ルビ間</label><input type="number" id="pFrameRubyLS" value="${fmt(one.rubyLS||0)}" step="0.5" title="ルビの文字間隔（px）">
-          <label>ルビ位置</label><input type="number" id="pFrameRubyDy" value="${fmt(one.rubyDy||0)}" step="1" title="ルビの上下位置（px、+で上へ）">`) +
+        numIn('pFrameSize','サイズ',one.size||16,1,4,800,'px') +
+        rangeIn('pFrameLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
+        rangeIn('pFrameLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
+        rangeIn('pFrameRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
+        rangeIn('pFrameRubyDy','ルビ位置',one.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
         propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', one)}` +
           `<label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
         propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
+        fontWarnHTML() +
         colorInCMYK('pFrameColor','文字色', one.textFill||'#111111') +
         `</div>`;
     }
     if(one.type==='text'){
       html += `<div class="pgroup">` +
         propRow(`<textarea id="pText" rows="2" style="flex:1" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) +
-        numIn('pSize','サイズ',one.size) +
+        numIn('pSize','サイズ',one.size,1,4,800,'px') +
         propRow(`<label>書体</label>${fontSelectHTML('pFont', one)}` +
           `<label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
         propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
-        propRow(`<label>文字間</label><input type="number" id="pLS" value="${fmt(one.ls||0)}" step="0.5" title="文字の間隔（px）。マイナスで詰める">
-          <label>行間</label><input type="number" id="pLineH" value="${fmt(one.lineH||1.25)}" step="0.05" min="0.5" title="行送り（フォントサイズ比）">`) +
-        propRow(`<label>ルビ間</label><input type="number" id="pRubyLS" value="${fmt(one.rubyLS||0)}" step="0.5" title="ルビの文字間隔（px）">
-          <label>ルビ位置</label><input type="number" id="pRubyDy" value="${fmt(one.rubyDy||0)}" step="1" title="ルビの上下位置（px、+で上へ）">`) +
-        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" title="0で折り返しなし。単語を切らずに自動改行します">
+        fontWarnHTML() +
+        rangeIn('pLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
+        rangeIn('pLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
+        rangeIn('pRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
+        rangeIn('pRubyDy','ルビ位置',one.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
+        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">
           <label class="toggle" title="行末を枠に揃えるよう文字間を自動調整"><input type="checkbox" id="pJustify" ${one.justify!==false?'checked':''}>均等</label>`) + `</div>`;
     }
   }
@@ -1965,10 +2229,10 @@ function renderProps(){
   bindGeom('pH', v=>{ const cb=selBBox(); if(v<1)return; const o=JSON.parse(JSON.stringify(selShapes()));
     selShapes().forEach((s,i)=>bboxTransform(s,o[i],cb,{x:cb.x,y:cb.y,w:cb.w,h:v})); });
   if(one){
-    bindGeom('pRot', v=>{ one.rotation = ((v%360)+360)%360; });
+    bindRange('pRot', v=>{ one.rotation = ((v%360)+360)%360; }, '°');
     bindGeom('pRx', v=>{ one.rx = Math.max(0,v); });
     bindGeom('pSides', v=>{ one.sides = clamp(Math.round(v),3,30); });
-    bindGeom('pInner', v=>{ one.inner = clamp(v,0.05,0.95); });
+    bindRange('pInner', v=>{ one.inner = clamp(v,0.05,0.95); }, '', 2);
     bindGeom('pSize', v=>{ one.size = Math.max(4,v); });
     const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; render(); };
     const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); render(); };
@@ -1979,6 +2243,8 @@ function renderProps(){
     bindFontSelect('pFont', one);
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
     initFontPreview(one);
+    updateFontMissingWarn(one);
+    bindFontCheck(one);
     const pfl = $('pFontLoad');
     if(pfl) pfl.onclick = ()=>{
       const name = $('pFontName').value.trim();
@@ -1999,14 +2265,15 @@ function renderProps(){
     const pbw = $('pBoxW');
     if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value; one.boxW = v>0 ? Math.max(10,v) : undefined; render(); };
     const pj = $('pJustify'); if(pj) pj.onchange = ()=>{ startEdit(); one.justify = pj.checked; render(); };
-    bindGeom('pLS', v=>{ one.ls = v ? clamp(v,-20,100) : undefined; });
-    bindGeom('pLineH', v=>{ one.lineH = clamp(v,0.5,4); });
-    bindGeom('pFrameLS', v=>{ one.ls = v ? clamp(v,-20,100) : undefined; });
-    bindGeom('pFrameLineH', v=>{ one.lineH = clamp(v,0.5,4); });
-    bindGeom('pRubyLS', v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; });
-    bindGeom('pRubyDy', v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; });
-    bindGeom('pFrameRubyLS', v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; });
-    bindGeom('pFrameRubyDy', v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; });
+    // 文字組みの数値はスライダーで即時反映（キャプション工房と共通仕様）
+    const setLS   = v=>{ one.ls = v ? clamp(v,-20,100) : undefined; };
+    const setLineH= v=>{ one.lineH = clamp(v,0.5,4); };
+    const setRbLS = v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; };
+    const setRbDy = v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; };
+    bindRange('pLS', setLS, 'px');            bindRange('pFrameLS', setLS, 'px');
+    bindRange('pLineH', setLineH, '', 2);     bindRange('pFrameLineH', setLineH, '', 2);
+    bindRange('pRubyLS', setRbLS, 'px');      bindRange('pFrameRubyLS', setRbLS, 'px');
+    bindRange('pRubyDy', setRbDy, 'px');      bindRange('pFrameRubyDy', setRbDy, 'px');
     const psm = $('pSmooth'); if(psm) psm.onchange = ()=>{ startEdit(); one.smooth = psm.checked; render(); };
     const pcl = $('pClosed'); if(pcl) pcl.onchange = ()=>{ startEdit(); one.closed = pcl.checked; render(); };
     const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); one.dash = pd.value; render(); };
@@ -2398,13 +2665,18 @@ function buildSVGString(){
 /* ---- 書き出し用フォント埋め込み ----
    Webフォント使用時、<img>経由のラスタライズは外部リソースを取得できないため
    フォントをdata URIとしてSVGに埋め込む。text=で使用文字のみのサブセットを要求。 */
+/* 書き出しに埋め込むフォント → 使用文字。キーはCSSで参照される実ファミリ名。
+   端末インストール前提の書体（BIZ UD・游・ヒラギノ等）は配布物が無いので埋め込まない＝
+   スタックの後続候補で表示される（キャプション工房と同じ扱い） */
 function usedWebFonts(){
-  const builtin = /^(sans-serif|serif|monospace)$/;
   const map = new Map();
   state.shapes.forEach(s=>{
-    if(shapeVisible(s) && (s.type==='text' || isFrameShape(s)) && s.text && s.font && !builtin.test(s.font)){
-      map.set(s.font, (map.get(s.font)||'') + s.text);
-    }
+    if(!shapeVisible(s) || !(s.type==='text' || isFrameShape(s)) || !s.text || !s.font) return;
+    const f = FONTS[s.font];
+    // レジストリ書体はオンライン書体（gf持ち）だけが埋め込み対象
+    const fam = f ? (f.gf ? (f.family || s.font) : null) : s.font;
+    if(!fam || GENERIC_FAMS.includes(String(fam).toLowerCase())) return;
+    map.set(fam, (map.get(fam)||'') + s.text);
   });
   return map;
 }
@@ -2564,6 +2836,7 @@ function openJSON(file){
       state.doc = data.doc || state.doc;
       state.shapes = data.shapes;
       backfillImageNat();
+      ensureProjectFonts();
       state.layers = Array.isArray(data.layers) ? data.layers : [];
       state.activeLayer = data.activeLayer || null;
       state.guides = data.guides || state.guides;
@@ -2810,6 +3083,7 @@ function restoreAutosave(){
     state.doc = data.doc || state.doc;
     state.shapes = data.shapes;
     backfillImageNat();
+    ensureProjectFonts();
     state.layers = Array.isArray(data.layers) ? data.layers : [];
     state.activeLayer = data.activeLayer || null;
     state.guides = data.guides || {v:[], h:[]};
