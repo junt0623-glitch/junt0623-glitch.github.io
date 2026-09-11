@@ -584,7 +584,7 @@ function tokenizeRuby(para){
   return out;
 }
 function layoutText(s){
-  measureCtx.font = `${(s.bold||fontWeightOf(s.font)===700)?'bold ':''}${s.size}px ${fontFamilyAttr(s.font)}`;
+  measureCtx.font = `${textWeight(s)} ${s.size}px ${fontFamilyAttr(s.font)}`;
   const baseLS = +s.ls || 0;   // 文字間（ユーザー指定、px）
   const w = t => measureCtx.measureText(t).width + baseLS*t.length;
   const out = [];
@@ -631,7 +631,7 @@ function layoutText(s){
 function buildTextLines(t, spec, x, y0, lines){
   const NS = 'http://www.w3.org/2000/svg';
   const size = spec.size, lh = (spec.lineH || 1.25)*size;
-  measureCtx.font = `${(spec.bold||fontWeightOf(spec.font)===700)?'bold ':''}${size}px ${fontFamilyAttr(spec.font)}`;
+  measureCtx.font = `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
   (lines || layoutText(spec)).forEach((ln,i)=>{
     const y = y0 + i*lh;
     const tp = document.createElementNS(NS,'tspan');
@@ -708,7 +708,7 @@ const FRAME_TEXT_PAD = 8;
 function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type==='poly'; }
 /* 枠内文字のレイアウト指定（描画・自動調整で同じ値を使う） */
 function frameTextSpec(s, boxW){
-  return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold,
+  return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold, weight:s.weight,
     boxW, justify:true, ls:s.ls, lineH:s.lineH, rubyLS:s.rubyLS, rubyDy:s.rubyDy};
 }
 /* 字形のインクが送り幅から外へ出る分の許容量 */
@@ -772,7 +772,7 @@ function autoFitFrame(s){
   const spec = frameTextSpec(s, boxW);
   const lines = layoutText({...spec, justify:false});
   if(!lines.length) return false;
-  measureCtx.font = `${(spec.bold||fontWeightOf(spec.font)===700)?'bold ':''}${size}px ${fontFamilyAttr(spec.font)}`;
+  measureCtx.font = `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
   const baseLS = +s.ls || 0;
   let maxW = 0;
   lines.forEach(ln=>{
@@ -800,7 +800,7 @@ function frameTextEl(s){
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
   t.setAttribute('font-size', size);
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
-  if(fake.bold || fontWeightOf(fake.font)) t.setAttribute('font-weight', fake.bold ? 'bold' : String(fontWeightOf(fake.font)));
+  t.setAttribute('font-weight', String(textWeight(fake)));
   t.setAttribute('fill', s.textFill || '#111111');
   t.setAttribute('clip-path', `url(#clip${s.id})`);
   buildTextLines(t, fake, x, y, lines);
@@ -848,7 +848,7 @@ function shapeEl(s, live){
       el.setAttribute('x',fmt(s.x)); el.setAttribute('y',fmt(s.y));
       el.setAttribute('font-size',s.size);
       el.setAttribute('font-family',fontFamilyAttr(s.font));
-      if(s.bold || fontWeightOf(s.font)) el.setAttribute('font-weight', s.bold ? 'bold' : String(fontWeightOf(s.font)));
+      el.setAttribute('font-weight', String(textWeight(s)));
       buildTextLines(el, s, s.x, s.y);
       break;
     }
@@ -1907,6 +1907,14 @@ initFonts();
 function fontStack(key){ const f = FONTS[key]; return f ? f.stack : null; }
 /* 一部の書体は太さ指定を持つ。未インストール時のフォールバックでも太字で出す */
 function fontWeightOf(key){ return (FONTS[key] && FONTS[key].weight) || null; }
+/* 文字の太さ（100〜900）。明示指定 > 書体そのものの太さ > 太字指定 > 標準 の順で決まる。
+   boldは旧データ互換（太字チェックだった頃の保存値） */
+const TEXT_WEIGHTS = [100,200,300,400,500,600,700,800,900];
+function textWeight(s){
+  if(s && s.weight != null && s.weight !== '') return clamp(Math.round(+s.weight/100)*100, 100, 900);
+  if(s && s.bold) return 700;
+  return (s && fontWeightOf(s.font)) || 400;
+}
 /* オンライン書体のGoogle Fonts上のファミリ名（書き出し時の埋め込みに使う） */
 function fontFamilyName(key){
   const f = FONTS[key];
@@ -1945,30 +1953,54 @@ function selectedFontUnavailable(key){
 }
 /* オンライン書体のオンデマンド読み込み。明示的に選んだときだけ通信する */
 const gfLoaded = new Set();
-function ensureFontLoaded(key){
+/* オンライン書体の指定は Family:wght@400;700 の形。任意の太さを使うときは、
+   その太さも要求しないと近い太さで代用されてしまう。
+   wght軸を持たない書体（Pacifico等）は太さ指定を足さない（要求すると取得に失敗するため） */
+function gfSpecWithWeight(gf, weight){
+  if(!weight || !/:wght@/.test(gf)) return gf;
+  const [fam, axis] = gf.split(':wght@');
+  const list = [...new Set(axis.split(';').concat(String(weight)))]
+    .map(Number).filter(n=>n>=100&&n<=900).sort((a,b)=>a-b);
+  return fam + ':wght@' + list.join(';');
+}
+/* 選ばれた太さがまだ読み込まれていなければ取得する */
+function ensureWeightLoaded(key, weight){
+  const f = FONTS[key];
+  if(!f || !f.gf || !/:wght@/.test(f.gf)) return Promise.resolve(key);
+  return ensureFontLoaded(key, weight);
+}
+function ensureFontLoaded(key, weight){
   const f = FONTS[key];
   if(!f || !f.gf) return Promise.resolve(key);
-  if(gfLoaded.has(key)) return Promise.resolve(key);
+  const gf = gfSpecWithWeight(f.gf, weight);
+  if(gfLoaded.has(gf)) return Promise.resolve(key);
   return new Promise(resolve=>{
-    gfLoaded.add(key);
+    gfLoaded.add(gf);
     const l = document.createElement('link');
     l.rel = 'stylesheet';
-    l.href = 'https://fonts.googleapis.com/css2?family=' + f.gf + '&display=swap';
+    l.href = 'https://fonts.googleapis.com/css2?family=' + gf + '&display=swap';
     // フォント到着後に再描画（字形の寸法に依存する折返し計算をやり直すため）
     l.onload = ()=>{
       const done = ()=>{ render(true); resolve(key); };
       if(document.fonts && document.fonts.ready) document.fonts.ready.then(done); else done();
     };
-    l.onerror = ()=>{ gfLoaded.delete(key); l.remove(); resolve(key); };
+    l.onerror = ()=>{ gfLoaded.delete(gf); l.remove(); resolve(key); };
     document.head.appendChild(l);
     setTimeout(()=> resolve(key), 8000);
   });
 }
 /* データ中で使われているオンライン書体をまとめて読み込む（保存ファイルを開いたとき用） */
 function ensureProjectFonts(){
-  const keys = new Set();
-  (state.shapes||[]).forEach(s=>{ if(s.font) keys.add(s.font); });
-  keys.forEach(k=>{ if(FONTS[k] && FONTS[k].gf) ensureFontLoaded(k); });
+  const use = new Map();
+  (state.shapes||[]).forEach(s=>{
+    if(!s.font) return;
+    if(!use.has(s.font)) use.set(s.font, new Set());
+    use.get(s.font).add(textWeight(s));
+  });
+  use.forEach((weights, k)=>{
+    if(!(FONTS[k] && FONTS[k].gf)) return;
+    weights.forEach(w=> ensureFontLoaded(k, w));
+  });
 }
 
 /* ================= Webフォント（Google Fonts・フォントファイル） ================= */
@@ -2077,7 +2109,7 @@ function bindFontSelect(id, one){
     // レジストリの書体: オンライン書体だけ取得が要る。取得を待たずに適用し、届いたら再描画する
     if(f){
       pushHistory(); one.font = val; autoFitFrame(one); render();
-      if(f.gf) ensureFontLoaded(val).then(()=>{ if(isFrameShape(one)) autoFitFrame(one); render(); });
+      if(f.gf) ensureFontLoaded(val, textWeight(one)).then(()=>{ if(isFrameShape(one)) autoFitFrame(one); render(); });
       return;
     }
     if(isKnownFont(val)){ pushHistory(); one.font = val; autoFitFrame(one); render(); return; }
@@ -2325,7 +2357,8 @@ function renderProps(){
         rangeIn('pFrameRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
         rangeIn('pFrameRubyDy','ルビ位置',one.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
         propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', one)}` +
-          `<label class="toggle"><input type="checkbox" id="pFrameBold" ${one.bold?'checked':''}>太字</label>`) +
+          ``) +
+        rangeIn('pFrameWeight','太さ',textWeight(one),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -2339,7 +2372,8 @@ function renderProps(){
         propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) +
         numIn('pSize','サイズ',one.size,1,4,800,'px') +
         propRow(`<label>書体</label>${fontSelectHTML('pFont', one)}` +
-          `<label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
+          ``) +
+        rangeIn('pWeight','太さ',textWeight(one),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -2391,13 +2425,20 @@ function renderProps(){
     const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; autoFitFrame(one); render(); };
     const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); autoFitFrame(one); render(); };
     bindFontSelect('pFrameFont', one);
-    const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; autoFitFrame(one); render(); };
+    const setWeight = v=>{
+      one.weight = clamp(Math.round(v/100)*100, 100, 900);
+      delete one.bold;                 // 太さ指定に一本化する（boldは旧データ互換のみ）
+      ensureWeightLoaded(one.font, one.weight);
+      autoFitFrame(one);
+    };
+    bindRange('pFrameWeight', setWeight, '');
+    bindRange('pWeight', setWeight, '');
     const pfit = $('pFrameFit');
     if(pfit) pfit.onchange = ()=>{ startEdit(); one.fitText = pfit.checked; autoFitFrame(one); render(); };
     bindColorCMYK('pFrameColor','textFill');
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     bindFontSelect('pFont', one);
-    const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
+
     bindAutoGrow('pText'); bindAutoGrow('pFrameText');
     initFontPreview(one);
     updateFontMissingWarn(one);
@@ -2833,19 +2874,23 @@ function usedWebFonts(){
     // レジストリ書体はオンライン書体（gf持ち）だけが埋め込み対象
     const fam = f ? (f.gf ? (f.family || s.font) : null) : s.font;
     if(!fam || GENERIC_FAMS.includes(String(fam).toLowerCase())) return;
-    map.set(fam, (map.get(fam)||'') + s.text);
+    const cur = map.get(fam) || {text:'', weights:new Set()};
+    cur.text += s.text;
+    cur.weights.add(textWeight(s));   // 使っている太さだけを埋め込む
+    map.set(fam, cur);
   });
   return map;
 }
 async function fontEmbedCSS(){
   let css = '';
-  for(const [fam, text] of usedWebFonts()){
+  for(const [fam, use] of usedWebFonts()){
     const cf = (state.customFonts||[]).find(c=>c.name===fam);
     if(cf){ css += `@font-face{font-family:"${fam}";src:url(${cf.data});}`; continue; }
     try{
-      const uniq = [...new Set(text)].join('');
+      const uniq = [...new Set(use.text)].join('');
+      const wl = [...use.weights].sort((a,b)=>a-b).join(';') || '400';
       const url = 'https://fonts.googleapis.com/css2?family=' +
-        encodeURIComponent(fam).replace(/%20/g,'+') + ':wght@400;700&display=swap' +
+        encodeURIComponent(fam).replace(/%20/g,'+') + ':wght@' + wl + '&display=swap' +
         '&text=' + encodeURIComponent(uniq);
       let txt = await (await fetch(url)).text();
       for(const u of new Set([...txt.matchAll(/url\((https:[^)]+)\)/g)].map(m=>m[1]))){
@@ -3184,7 +3229,8 @@ function importSVGText(text){
           newShapes.push(newShape('text', {
             x:wp.x, y:wp.y, text: el.textContent || '', size,
             font: /serif/i.test(cs.fontFamily) ? 'serif' : /mono/i.test(cs.fontFamily) ? 'monospace' : 'sans-serif',
-            bold: parseInt(weight,10) >= 600 || /bold/i.test(weight),
+            // 取り込んだ太さをそのまま保つ（bold扱いに丸めない）
+            weight: /bold/i.test(weight) ? 700 : clamp(Math.round((parseInt(weight,10)||400)/100)*100, 100, 900),
             stroke:'none', fill: el.getAttribute('fill') || cs.fill || '#000000',
           }));
         }catch(err){ /* サポート外の要素はスキップ */ }
