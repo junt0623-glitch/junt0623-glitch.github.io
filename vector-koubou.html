@@ -227,6 +227,7 @@ button,select,.tbtn{touch-action:manipulation;}
   <label class="toggle"><input type="checkbox" id="chkGrid">グリッド</label>
   <label class="toggle"><input type="checkbox" id="chkSnap">スナップ</label>
   <label class="toggle"><input type="checkbox" id="chkRuler" checked>定規</label>
+  <label class="toggle" title="オンにすると作図後もツールが切り替わらず、同じ図形を続けて描けます"><input type="checkbox" id="chkKeepTool">連続作成</label>
 </header>
 
 <div id="main">
@@ -494,6 +495,14 @@ function newShape(type, extra){
     rotation: 0, visible: true, locked: false,
   }, extra);
   if(!s.name) s.name = (typeNames[s.star ? 'star' : type] || type) + ' ' + s.id;
+  // 塗りも線も無いと画面に出ず、クリックもドラッグもできない図形になる。
+  // 直前にテキスト（線なし）を扱うとstyleNow.strokeがnoneになるため、ここで線を戻す。
+  // 線(line)はfillが効かないので、塗りの有無にかかわらず線が必要。
+  const needsStroke = (type==='line') || (s.fill==='none' || s.fill==null);
+  if(type!=='text' && type!=='image' && s.stroke==='none' && needsStroke){
+    s.stroke = (styleNow.stroke!=='none' && styleNow.stroke) || '#33312e';
+    if(!(s.strokeWidth > 0)) s.strokeWidth = 2;
+  }
   return s;
 }
 
@@ -1120,6 +1129,13 @@ function buildToolbar(){
     tb.appendChild(b);
   });
 }
+/* 作図直後は選択ツールへ戻す。ツールが作図のままだと、置いた図形をドラッグしても
+   移動ではなく次の図形の作成になり「動かせない」状態になるため。
+   「連続作成」がオンのときは切り替えない */
+function afterCreate(){
+  if(state.keepTool) return;
+  if(state.tool !== 'select') setTool('select');
+}
 function setTool(t){
   if(pen) finishPen(false);
   state.tool = t;
@@ -1320,6 +1336,7 @@ stage.addEventListener('pointerdown', e=>{
     const s = newShape('text',{x:snapX(p.x), y:snapY(p.y), text:'テキスト', size:32, font:'sans-serif', bold:false, stroke:'none', fill:'#222222'});
     state.shapes.push(s);
     state.sel = new Set([s.id]);
+    afterCreate();
     render();
     openTextEditor(s);
     return;
@@ -1504,6 +1521,7 @@ window.addEventListener('pointerup', e=>{
       if(s.type==='line'){ s.x2=s.x1+120; }
       if(s.type==='poly'){ s.r=60; }
     }
+    afterCreate();
     render();
   }
   if(drag.mode==='pencil'){
@@ -1515,6 +1533,7 @@ window.addEventListener('pointerup', e=>{
       out.push(pts[pts.length-1]);
       drag.s.pts = out;
     }
+    afterCreate();
     render();
   }
   if(drag.mode==='move' && !drag.moved){
@@ -1624,15 +1643,18 @@ function bboxTransform(s, o, ob, nb){
 /* ================= ペン ================= */
 function finishPen(close){
   if(!pen){ return; }
-  if(pen.pts.length>=2){
+  const made = pen.pts.length>=2;
+  if(made){
     pushHistory();
     const s = newShape('path',{pts:pen.pts, closed:!!close, smooth:false,
       fill: close ? styleNow.fill : 'none'});
     state.shapes.push(s);
     state.sel = new Set([s.id]);
   }
+  // penを先にnullにしてからツールを戻す（setToolがfinishPenを呼ぶため）
   pen = null;
   overlayRenderPen();
+  if(made) afterCreate();
 }
 
 /* ================= テキスト編集 ================= */
@@ -3251,6 +3273,7 @@ $('btnFit').onclick = zoomFit;
 $('chkGrid').onchange = e=>{ state.grid = e.target.checked; render(); };
 $('chkSnap').onchange = e=>{ state.snap = e.target.checked; };
 $('chkRuler').onchange = e=>{ state.ruler = e.target.checked; renderChrome(); };
+$('chkKeepTool').onchange = e=>{ state.keepTool = e.target.checked; };
 $('btnAddLayer').onclick = addLayer;
 $('fontInput').onchange = e=>{
   const f = e.target.files[0];
