@@ -94,11 +94,18 @@ input[type=range]{accent-color:var(--accent);}
 #stage.tool-text{cursor:text;}
 
 #textEditor{position:absolute; display:none; z-index:20;}
-#textEditor textarea{background:#fff; color:#111; border:1px solid var(--accent);
-  min-width:120px; min-height:30px; resize:both; line-height:1.3;}
+#textEditor textarea{background:#fff; color:#111; border:2px solid var(--accent);
+  border-radius:3px; padding:3px 5px; box-shadow:0 2px 10px rgba(0,0,0,.45);
+  min-width:120px; min-height:30px; resize:both; line-height:1.35; overflow:hidden;}
+/* 文字入力欄: 既定で中身の行数に合わせて高さが伸びる（縦スクロールを出さない） */
+/* min-width:0 が無いと、長い行の最小内容幅がパネル全体を押し広げてしまう */
+.prow textarea{font-size:13px; line-height:1.6; padding:5px 7px; resize:vertical;
+  min-height:34px; min-width:0; overflow:hidden; background:#1a1c22; color:#f0f2f6;}
+.prow textarea:focus{background:#12141a;}
 
 /* ===== 右パネル ===== */
-#side{flex:0 0 248px; background:var(--panel); border-left:1px solid var(--line);
+/* min-width:0 が無いと中身の最小内容幅（長い文字列など）で248pxを超えて広がり、画面が狭くなる */
+#side{flex:0 0 248px; min-width:0; background:var(--panel); border-left:1px solid var(--line);
   display:flex; flex-direction:column; min-height:0;}
 .paneltitle{padding:7px 10px; font-weight:700; font-size:12px; letter-spacing:.06em;
   color:var(--muted); border-bottom:1px solid var(--line); background:var(--panel2);}
@@ -1122,6 +1129,15 @@ function setTool(t){
 }
 
 /* ================= ポインタ操作 ================= */
+/* ポインタ位置の図形ID。<text>内の<tspan>やグループの子など、data-idを持たない
+   子要素が当たることがあるため、最も近い祖先まで遡って引く */
+function targetShapeId(e){
+  const el = e.target;
+  if(!el) return null;
+  if(el.dataset && el.dataset.id) return el.dataset.id;
+  const hit = el.closest ? el.closest('[data-id]') : null;
+  return hit ? hit.dataset.id : null;
+}
 stage.addEventListener('pointerdown', e=>{
   if(e.pointerType==='touch'){
     touches.set(e.pointerId, {x:e.clientX, y:e.clientY});
@@ -1193,7 +1209,7 @@ stage.addEventListener('pointerdown', e=>{
       capture(e);
       return;
     }
-    const idAttr = e.target.dataset ? e.target.dataset.id : null;
+    const idAttr = targetShapeId(e);
     if(idAttr){
       const s = state.shapes.find(x=>x.id===+idAttr);
       if(s && state.sel.has(s.id) && s.type==='path'){
@@ -1214,7 +1230,7 @@ stage.addEventListener('pointerdown', e=>{
   }
 
   if(t==='picker'){
-    const idAttr = e.target.dataset ? e.target.dataset.id : null;
+    const idAttr = targetShapeId(e);
     if(idAttr){
       const src = state.shapes.find(x=>x.id===+idAttr);
       if(src) applyStyleFrom(src);
@@ -1234,7 +1250,7 @@ stage.addEventListener('pointerdown', e=>{
       const c = {x:b.x+b.w/2, y:b.y+b.h/2};
       drag = {mode:'rotate', c, startAng:Math.atan2(p.y-c.y,p.x-c.x), origRot:s.rotation||0, s};
     }else{
-      const idAttr = e.target.dataset ? e.target.dataset.id : null;
+      const idAttr = targetShapeId(e);
       if(idAttr){
         const id = +idAttr;
         if(e.shiftKey){
@@ -1504,7 +1520,7 @@ window.addEventListener('pointerup', e=>{
   if(drag.mode==='move' && !drag.moved){
     // 動かさなかった場合：Shiftなしクリックで単独選択に絞る
     undoStack.pop(); // 無変更の履歴を破棄
-    const idAttr = e.target.dataset ? e.target.dataset.id : null;
+    const idAttr = targetShapeId(e);
     if(idAttr && !e.shiftKey){ state.sel = new Set([+idAttr]); expandSelToGroups(); render(); }
   }
   drag = null;
@@ -1530,7 +1546,7 @@ function handleStageDbl(e){
     }
     return;
   }
-  const idAttr = e.target.dataset ? e.target.dataset.id : null;
+  const idAttr = targetShapeId(e);
   if(idAttr){
     const s = state.shapes.find(x=>x.id===+idAttr);
     if(s && s.type==='text'){ state.sel=new Set([s.id]); render(); openTextEditor(s); }
@@ -1620,25 +1636,39 @@ function finishPen(close){
 }
 
 /* ================= テキスト編集 ================= */
+/* 画面上の文字入力枠を、入力済みの文字量に合わせた大きさにする */
+function fitEditorToText(ta, fallback){
+  const txt = ta.value || fallback || '';
+  const lines = String(txt).split('\n');
+  const cols = Math.max(8, ...lines.map(l=>[...l].reduce((n,c)=> n + (/[\x00-\xff]/.test(c)?1:2), 0)));
+  ta.cols = Math.min(60, cols);
+  ta.rows = Math.min(20, lines.length);
+  ta.style.height = 'auto';
+  ta.style.height = (ta.scrollHeight + 2) + 'px';
+}
 function openTextEditor(s){
   const ed = $('textEditor'), ta = $('textArea');
   const scr = toScreen({x:s.x, y:s.y - s.size});
   ed.style.left = scr.x+'px'; ed.style.top = scr.y+'px'; ed.style.display = 'block';
   ta.value = s.text;
   ta.style.fontSize = Math.max(12, s.size*state.zoom)+'px';
-  ta.rows = String(s.text).split('\n').length;
+  ta.style.width = ''; ta.style.height = '';
+  // 入力中も文字量に追従させる（既定で全文が見える大きさになる）
+  const fit = ()=> fitEditorToText(ta, s.text);
+  fit();
+  ta.oninput = fit;
   ta.focus(); ta.select();
   const commit = ()=>{
     pushHistory();
     s.text = ta.value || 'テキスト';
     ed.style.display='none';
-    ta.onblur = null; ta.onkeydown = null;
+    ta.onblur = null; ta.onkeydown = null; ta.oninput = null;
     render();
   };
   ta.onblur = commit;
   ta.onkeydown = ev=>{
     ev.stopPropagation();
-    if(ev.key==='Escape'){ ta.onblur=null; ed.style.display='none'; render(); }
+    if(ev.key==='Escape'){ ta.onblur=null; ta.oninput=null; ed.style.display='none'; render(); }
     if(ev.key==='Enter' && (ev.ctrlKey||ev.metaKey)) commit();
   };
 }
@@ -1653,7 +1683,8 @@ function openFrameTextEditor(s){
   ta.style.fontSize = Math.max(12, (s.size||16)*state.zoom)+'px';
   ta.style.width = Math.max(40, scrBR.x-scr.x)+'px';
   ta.style.height = Math.max(24, scrBR.y-scr.y)+'px';
-  ta.rows = 1;
+  // 枠内文字は枠の大きさが入力枠の大きさ。直前の通常テキスト編集の設定を持ち越さない
+  ta.rows = 1; ta.removeAttribute('cols'); ta.oninput = null;
   ta.focus(); ta.select();
   const commit = ()=>{
     pushHistory();
@@ -1661,7 +1692,7 @@ function openFrameTextEditor(s){
     if(s.text && !s.size) s.size = 16;
     ed.style.display='none';
     ta.style.width=''; ta.style.height='';
-    ta.onblur = null; ta.onkeydown = null;
+    ta.onblur = null; ta.onkeydown = null; ta.oninput = null;
     render();
   };
   ta.onblur = commit;
@@ -1988,6 +2019,20 @@ function pxToMm(px){ return Math.round(px/PX_PER_MM*10)/10; }
 function mmToPx(mm){ return Math.round(clamp(+mm||1, 1, DOC_MAX_MM)*PX_PER_MM*100)/100; }
 function clampDocPx(px){ return Math.round(clamp(+px||1, 1, DOC_MAX_PX)*100)/100; }
 function propRow(html){ return `<div class="prow">${html}</div>`; }
+/* 入力欄の高さを中身に合わせる。既定で文字量に応じて広がり、長文でも全体が見える */
+const TA_MIN_H = 34, TA_MAX_H = 260;
+function autoGrowTextarea(el){
+  if(!el) return;
+  el.style.height = 'auto';
+  el.style.height = clamp(el.scrollHeight + 2, TA_MIN_H, TA_MAX_H) + 'px';
+  // 上限に達したときだけスクロールさせる
+  el.style.overflowY = (el.scrollHeight + 2 > TA_MAX_H) ? 'auto' : 'hidden';
+}
+function bindAutoGrow(id){
+  const el = $(id); if(!el) return;
+  autoGrowTextarea(el);
+  el.addEventListener('input', ()=> autoGrowTextarea(el));
+}
 /* 数値入力（キャプション工房と共通仕様）: 上下限と刻みを必ず与え、単位を併記する */
 function numIn(id,label,val,step,min,max,unit){
   const lim = (min!==undefined?` min="${min}"`:'') + (max!==undefined?` max="${max}"`:'');
@@ -2062,7 +2107,9 @@ function fillPanel(one){
   return html;
 }
 function bindFillPanel(one){
+  // 線は塗り欄を持たない。ここで落ちると以降の束縛（線種・矢印など）が全て失われる
   const pft = $('pFillType');
+  if(!pft) return;
   pft.onchange = ()=>{
     pushHistory();
     const t = pft.value;
@@ -2164,7 +2211,7 @@ function renderProps(){
     }
     if(isFrameShape(one)){
       html += `<div class="pgroup">` +
-        propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="2" style="flex:1" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text||'')}</textarea>`) +
+        propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text||'')}</textarea>`) +
         numIn('pFrameSize','サイズ',one.size||16,1,4,800,'px') +
         rangeIn('pFrameLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
         rangeIn('pFrameLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
@@ -2182,7 +2229,7 @@ function renderProps(){
     }
     if(one.type==='text'){
       html += `<div class="pgroup">` +
-        propRow(`<textarea id="pText" rows="2" style="flex:1" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) +
+        propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) +
         numIn('pSize','サイズ',one.size,1,4,800,'px') +
         propRow(`<label>書体</label>${fontSelectHTML('pFont', one)}` +
           `<label class="toggle"><input type="checkbox" id="pBold" ${one.bold?'checked':''}>太字</label>`) +
@@ -2242,6 +2289,7 @@ function renderProps(){
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     bindFontSelect('pFont', one);
     const pb = $('pBold'); if(pb) pb.onchange = ()=>{ startEdit(); one.bold = pb.checked; render(); };
+    bindAutoGrow('pText'); bindAutoGrow('pFrameText');
     initFontPreview(one);
     updateFontMissingWarn(one);
     bindFontCheck(one);
