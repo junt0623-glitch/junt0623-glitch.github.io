@@ -691,8 +691,10 @@ function dynamicDefStrings(){
     if(s.fill && typeof s.fill==='object') out.push(gradientDefString(s));
     if((s.arrowS||s.arrowE) && (s.type==='line'||(s.type==='path'&&!s.closed))) out.push(markerDefString(s));
     if(isFrameShape(s) && s.text){
-      const b = geomBBox(s), pad = FRAME_TEXT_PAD;
-      out.push(`<clipPath id="clip${s.id}"><rect x="${fmt(b.x+pad)}" y="${fmt(b.y+pad)}" width="${fmt(Math.max(0,b.w-pad*2))}" height="${fmt(Math.max(0,b.h-pad*2))}"/></clipPath>`);
+      // 均等割付の行は枠幅ぴったりまで伸びる。字形のインクは送り幅よりわずかに外へ出るため、
+      // クリップをその分だけ広げないと行末の字が削れる
+      const box = frameTextBox(s), ink = frameInkPad(s);
+      out.push(`<clipPath id="clip${s.id}"><rect x="${fmt(box.x-ink)}" y="${fmt(box.y-ink)}" width="${fmt(Math.max(0,box.w+ink*2))}" height="${fmt(Math.max(0,box.h+ink*2))}"/></clipPath>`);
     }
   });
   return out;
@@ -704,18 +706,97 @@ function updateGradientDefs(){
 /* ================= 図形の枠内テキスト（矩形・楕円・多角形） ================= */
 const FRAME_TEXT_PAD = 8;
 function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type==='poly'; }
+/* 枠内文字のレイアウト指定（描画・自動調整で同じ値を使う） */
+function frameTextSpec(s, boxW){
+  return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold,
+    boxW, justify:true, ls:s.ls, lineH:s.lineH, rubyLS:s.rubyLS, rubyDy:s.rubyDy};
+}
+/* 字形のインクが送り幅から外へ出る分の許容量 */
+function frameInkPad(s){ return Math.ceil((s.size||16)*0.12); }
+/* 1行目にルビがある分だけ、クリップで欠けないよう先頭行を下げる量 */
+function frameRubyPad(s, lines){
+  const size = s.size || 16;
+  return (lines[0] && lines[0].ruby && lines[0].ruby.length) ? size*0.55 + Math.max(0, +s.rubyDy||0) : 0;
+}
+/* 枠内で文字を組める領域。矩形は外接矩形の内側だが、楕円・多角形は外接矩形の隅が
+   図形の外へ出てしまうため、図形に内接する中央寄せの矩形を使う */
+function frameInnerRadiusRatio(s){
+  // 外接円半径に対する内接円半径の比。星形は内側の頂点までしか使えない
+  const n = Math.max(3, s.sides||3);
+  const base = Math.cos(Math.PI/n);
+  return s.star ? Math.min(base, s.inner||0.5) : base;
+}
+function frameTextBox(s){
+  const pad = FRAME_TEXT_PAD, b = geomBBox(s);
+  if(s.type==='rect'){
+    return {x:b.x+pad, y:b.y+pad, w:Math.max(10,b.w-pad*2), h:Math.max(6,b.h-pad*2)};
+  }
+  let w, h;
+  if(s.type==='ellipse'){ w = s.rx*Math.SQRT2; h = s.ry*Math.SQRT2; }
+  else {
+    // 内接円に収まる、外接矩形と同じ縦横比の矩形
+    const k = 2*s.r*frameInnerRadiusRatio(s)/Math.hypot(b.w, b.h);
+    w = b.w*k; h = b.h*k;
+  }
+  const cx = b.x + b.w/2, cy = b.y + b.h/2;
+  return {x:cx-w/2+pad, y:cy-h/2+pad, w:Math.max(10,w-pad*2), h:Math.max(6,h-pad*2)};
+}
+/* 文字を組む領域が needW×needH になるよう枠を広げる。外接矩形の左上は動かさない */
+function fitFrameToTextBox(s, needW, needH){
+  const pad = FRAME_TEXT_PAD, b = geomBBox(s);
+  if(s.type==='rect'){ s.w = needW + pad*2; s.h = needH + pad*2; return; }
+  if(s.type==='ellipse'){
+    s.rx = (needW + pad*2)/Math.SQRT2;
+    s.ry = (needH + pad*2)/Math.SQRT2;
+    s.cx = b.x + s.rx; s.cy = b.y + s.ry;
+    return;
+  }
+  if(s.type==='poly'){
+    // 外接矩形も内接円も半径に比例するので、必要な倍率は一次式で解ける
+    const uw = b.w/s.r, uh = b.h/s.r;
+    const k = 2*frameInnerRadiusRatio(s)/Math.hypot(uw, uh);
+    s.r = Math.max(4, Math.max((needW + pad*2)/(uw*k), (needH + pad*2)/(uh*k)));
+    const nb = geomBBox(s);
+    s.cx += b.x - nb.x; s.cy += b.y - nb.y;
+  }
+}
+/* 枠内文字の全文が収まる大きさへ枠を合わせる。
+   折返しは現在の枠幅で決め、そのうえで最長行の幅・総行数の高さちょうどに詰める。
+   最長行は元の枠幅以下なので、詰めても行の折れ位置は変わらない */
+function autoFitFrame(s){
+  if(!isFrameShape(s) || s.fitText===false || !s.text) return false;
+  const size = s.size || 16;
+  const box = frameTextBox(s);
+  const boxW = box.w;
+  // 均等割付を切って測る（均等割付の文字間は枠幅ぴったりに広げるため、実際の字幅にならない）
+  const spec = frameTextSpec(s, boxW);
+  const lines = layoutText({...spec, justify:false});
+  if(!lines.length) return false;
+  measureCtx.font = `${(spec.bold||fontWeightOf(spec.font)===700)?'bold ':''}${size}px ${fontFamilyAttr(spec.font)}`;
+  const baseLS = +s.ls || 0;
+  let maxW = 0;
+  lines.forEach(ln=>{
+    const t = ln.text || '';
+    maxW = Math.max(maxW, measureCtx.measureText(t).width + baseLS*Math.max(0, t.length-1));
+  });
+  const lh = (s.lineH || 1.25)*size;
+  const rubyPad = frameRubyPad(s, lines);
+  // 先頭行のベースラインは pad+rubyPad+size*0.9、最終行はその (n-1)*lh 下。さらに下方の張り出し分を足す
+  const needW = clamp(Math.ceil(maxW), 10, DOC_MAX_PX);
+  const needH = clamp(Math.ceil(rubyPad + size*0.9 + (lines.length-1)*lh + size*0.35), 6, DOC_MAX_PX);
+  if(Math.abs(needW-box.w) < 0.5 && Math.abs(needH-box.h) < 0.5) return false;
+  fitFrameToTextBox(s, needW, needH);
+  return true;
+}
 function frameTextEl(s){
   const NS = 'http://www.w3.org/2000/svg';
-  const b = geomBBox(s), pad = FRAME_TEXT_PAD;
-  const boxW = Math.max(10, b.w - pad*2);
+  const box = frameTextBox(s);
   const size = s.size || 16;
-  const fake = {text:s.text, size, font:s.font||'sans-serif', bold:s.bold, boxW, justify:true,
-    ls:s.ls, lineH:s.lineH, rubyLS:s.rubyLS, rubyDy:s.rubyDy};
+  const fake = frameTextSpec(s, box.w);
   const t = document.createElementNS(NS,'text');
   const lines = layoutText(fake);
-  // 先頭行にルビがある場合はクリップで欠けないよう開始位置を下げる
-  const rubyPad = (lines[0] && lines[0].ruby && lines[0].ruby.length) ? size*0.55 + Math.max(0, +s.rubyDy||0) : 0;
-  const x = b.x + pad, y = b.y + pad + size*0.9 + rubyPad;
+  const rubyPad = frameRubyPad(s, lines);
+  const x = box.x, y = box.y + size*0.9 + rubyPad;
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
   t.setAttribute('font-size', size);
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
@@ -1697,9 +1778,10 @@ function openTextEditor(s){
 
 function openFrameTextEditor(s){
   const ed = $('textEditor'), ta = $('textArea');
-  const b = geomBBox(s), pad = FRAME_TEXT_PAD;
-  const scr = toScreen({x:b.x+pad, y:b.y+pad});
-  const scrBR = toScreen({x:b.x+b.w-pad, y:b.y+b.h-pad});
+  // 入力枠は実際に文字が組まれる領域に重ねる（楕円・多角形では外接矩形と異なる）
+  const box = frameTextBox(s);
+  const scr = toScreen({x:box.x, y:box.y});
+  const scrBR = toScreen({x:box.x+box.w, y:box.y+box.h});
   ed.style.left = scr.x+'px'; ed.style.top = scr.y+'px'; ed.style.display = 'block';
   ta.value = s.text || '';
   ta.style.fontSize = Math.max(12, (s.size||16)*state.zoom)+'px';
@@ -1712,6 +1794,7 @@ function openFrameTextEditor(s){
     pushHistory();
     s.text = ta.value || undefined;
     if(s.text && !s.size) s.size = 16;
+    autoFitFrame(s);
     ed.style.display='none';
     ta.style.width=''; ta.style.height='';
     ta.onblur = null; ta.onkeydown = null; ta.oninput = null;
@@ -1993,18 +2076,18 @@ function bindFontSelect(id, one){
     const f = FONTS[val];
     // レジストリの書体: オンライン書体だけ取得が要る。取得を待たずに適用し、届いたら再描画する
     if(f){
-      pushHistory(); one.font = val; render();
-      if(f.gf) ensureFontLoaded(val).then(()=> render(true));
+      pushHistory(); one.font = val; autoFitFrame(one); render();
+      if(f.gf) ensureFontLoaded(val).then(()=>{ if(isFrameShape(one)) autoFitFrame(one); render(); });
       return;
     }
-    if(isKnownFont(val)){ pushHistory(); one.font = val; render(); return; }
+    if(isKnownFont(val)){ pushHistory(); one.font = val; autoFitFrame(one); render(); return; }
     // 読込中もセレクトは操作可能なままにし、続けて別の書体へすぐ切り替えられるようにする。
     // 古い読込が後から完了しても、その間に選ばれた新しい書体を上書きしないよう世代番号で判定する。
     const seq = ++fontSwitchSeq;
     setFontPreviewSample(val, fontSampleText(one));
     loadGoogleFont(val).then(fam=>{
       if(seq !== fontSwitchSeq) return;
-      pushHistory(); one.font = fam; render();
+      pushHistory(); one.font = fam; autoFitFrame(one); render();
     }).catch(()=>{
       if(seq !== fontSwitchSeq) return;
       sel.value = one.font||'sans-serif';
@@ -2235,6 +2318,8 @@ function renderProps(){
       html += `<div class="pgroup">` +
         propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text||'')}</textarea>`) +
         numIn('pFrameSize','サイズ',one.size||16,1,4,800,'px') +
+        propRow(`<label class="toggle" title="文字を入れると、全文が収まる大きさに枠を自動で合わせます">
+          <input type="checkbox" id="pFrameFit" ${one.fitText!==false?'checked':''}>文字に合わせて枠を自動調整</label>`) +
         rangeIn('pFrameLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
         rangeIn('pFrameLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
         rangeIn('pFrameRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
@@ -2303,10 +2388,12 @@ function renderProps(){
     bindGeom('pSides', v=>{ one.sides = clamp(Math.round(v),3,30); });
     bindRange('pInner', v=>{ one.inner = clamp(v,0.05,0.95); }, '', 2);
     bindGeom('pSize', v=>{ one.size = Math.max(4,v); });
-    const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; render(); };
-    const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); render(); };
+    const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; autoFitFrame(one); render(); };
+    const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); autoFitFrame(one); render(); };
     bindFontSelect('pFrameFont', one);
-    const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; render(); };
+    const pfb = $('pFrameBold'); if(pfb) pfb.onchange = ()=>{ startEdit(); one.bold = pfb.checked; autoFitFrame(one); render(); };
+    const pfit = $('pFrameFit');
+    if(pfit) pfit.onchange = ()=>{ startEdit(); one.fitText = pfit.checked; autoFitFrame(one); render(); };
     bindColorCMYK('pFrameColor','textFill');
     const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
     bindFontSelect('pFont', one);
@@ -2336,10 +2423,10 @@ function renderProps(){
     if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value; one.boxW = v>0 ? Math.max(10,v) : undefined; render(); };
     const pj = $('pJustify'); if(pj) pj.onchange = ()=>{ startEdit(); one.justify = pj.checked; render(); };
     // 文字組みの数値はスライダーで即時反映（キャプション工房と共通仕様）
-    const setLS   = v=>{ one.ls = v ? clamp(v,-20,100) : undefined; };
-    const setLineH= v=>{ one.lineH = clamp(v,0.5,4); };
-    const setRbLS = v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; };
-    const setRbDy = v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; };
+    const setLS   = v=>{ one.ls = v ? clamp(v,-20,100) : undefined; autoFitFrame(one); };
+    const setLineH= v=>{ one.lineH = clamp(v,0.5,4); autoFitFrame(one); };
+    const setRbLS = v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; autoFitFrame(one); };
+    const setRbDy = v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; autoFitFrame(one); };
     bindRange('pLS', setLS, 'px');            bindRange('pFrameLS', setLS, 'px');
     bindRange('pLineH', setLineH, '', 2);     bindRange('pFrameLineH', setLineH, '', 2);
     bindRange('pRubyLS', setRbLS, 'px');      bindRange('pFrameRubyLS', setRbLS, 'px');
