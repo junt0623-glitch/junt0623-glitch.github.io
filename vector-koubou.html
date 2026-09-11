@@ -190,6 +190,7 @@ button,select,.tbtn{touch-action:manipulation;}
 <header id="topbar">
   <div id="logo"><div id="seal">画</div><span id="appname">ベクターデザイン工房</span></div>
   <input id="fname" value="無題のデザイン" title="ファイル名">
+  <label class="toggle" title="保存・書き出しのファイル名の末尾に、その日の日付（_YYYYMMDD）を付けます"><input type="checkbox" id="chkDateStamp" checked>日付</label>
   <span class="sep"></span>
   <button id="btnNew">新規</button>
   <button id="btnOpen">開く</button>
@@ -2910,7 +2911,19 @@ async function buildSVGStringWithFonts(){
   const css = await fontEmbedCSS();
   return css ? svg.replace(/^(<svg[^>]*>)/, (m,p1)=> p1 + '<style>' + css + '</style>') : svg;
 }
-function fnameBase(){ return ($('fname').value || 'design').trim(); }
+/* 保存・書き出しのファイル名。既定でその日の日付を末尾に付ける（キャプション工房と同じ _YYYYMMDD 形式）。
+   すでに日付で終わっている名前には重ねて付けない */
+function stampYMD(d){
+  const t = d || new Date(), pad = n=> String(n).padStart(2,'0');
+  return `${t.getFullYear()}${pad(t.getMonth()+1)}${pad(t.getDate())}`;
+}
+function fnameBase(){
+  const name = ($('fname').value || 'design').trim() || 'design';
+  const chk = $('chkDateStamp');
+  if(chk && !chk.checked) return name;
+  if(/[_-]\d{8}$/.test(name)) return name;
+  return name + '_' + stampYMD();
+}
 function exportSVG(){
   buildSVGStringWithFonts().then(svg=>
     download(fnameBase()+'.svg', new Blob([svg], {type:'image/svg+xml'})));
