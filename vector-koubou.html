@@ -554,6 +554,18 @@ function fontFamilyAttr(f){
 let wordSeg = null;
 const KINSOKU_HEAD = /^[、。，．！？!?・：；:;）」』〉》〕】｝%％‰°℃ぁぃぅぇぉっゃゅょゎァィゥェォッャュョヮーゝゞヽヾ々…‥,.)\]}]/;
 const KINSOKU_TAIL = /[（「『〈《〔【｛([{]$/;
+/* 文字単位で割る位置の禁則調整。u[k] から次の行が始まるとき、
+   行頭に置けない字（、。」）など）が先頭に来る、または行末に残せない開き括弧で終わるなら、
+   その手前へ送って調整する（追い出し）。記号が続く場合に無限に戻らないよう回数を制限する */
+function kinsokuBreak(u, k){
+  for(let n=k; n>1; n--){
+    if(!KINSOKU_HEAD.test(u.charAt(n)) && !KINSOKU_TAIL.test(u.charAt(n-1))) return n;
+  }
+  // 記号が続いて禁則を満たせない場合は元の位置で折る。
+  // 手前へ送るほど行頭に回る記号が増えて、かえって悪くなるため
+  return k;
+}
+const CJK_CHAR = /[\u3000-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff00-\uff9f]/;
 function segmentWords(text){
   // 単語（名詞等）の途中で改行しないよう、言語対応の単語分割を使う
   let units;
@@ -561,7 +573,20 @@ function segmentWords(text){
     if(!wordSeg && window.Intl && Intl.Segmenter) wordSeg = new Intl.Segmenter('ja', {granularity:'word'});
     units = wordSeg ? [...wordSeg.segment(text)].map(x=>x.segment) : null;
   }catch(err){ units = null; }
-  if(!units) units = text.split(/(\s+)/).filter(t=>t!=='');
+  if(!units){
+    // Intl.Segmenter が無い環境（旧Safari等）。和文は1字ずつ改行できるので字単位に分け、
+    // 欧文の語は割らずに残す。こうすると下の禁則結合がそのまま効く
+    units = [];
+    text.split(/(\s+)/).filter(t=>t!=='').forEach(word=>{
+      if(/^\s+$/.test(word) || !CJK_CHAR.test(word)){ units.push(word); return; }
+      let buf = '';
+      [...word].forEach(ch=>{
+        if(CJK_CHAR.test(ch)){ if(buf){ units.push(buf); buf=''; } units.push(ch); }
+        else buf += ch;
+      });
+      if(buf) units.push(buf);
+    });
+  }
   // 禁則処理: 行頭に来てはならない記号は前の語へ、行末に残せない開き括弧は次の語へ結合
   const out = [];
   units.forEach(u=>{
@@ -619,6 +644,7 @@ function layoutText(s){
         const u = cur[0].t;
         let k = u.length-1;
         while(k>1 && w(u.slice(0,k)) > s.boxW) k--;
+        k = kinsokuBreak(u, k);
         out.push(mkLine([{t:u.slice(0,k)}], false));
         cur = [{t: u.slice(k).replace(/^\s+/,'')}];
       }
