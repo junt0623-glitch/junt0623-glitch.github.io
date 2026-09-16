@@ -2193,23 +2193,28 @@ let fontSwitchSeq = 0;
 function bindFontSelect(id, one){
   const sel = $(id); if(!sel) return;
   sel.value = one.font||'sans-serif';
+  // 書体は選択中のすべての図形に適用する（枠内文字は適用後に枠を合わせ直す）
+  const applyFont = fam => selShapes().forEach(sh=>{
+    sh.font = fam;
+    if(isFrameShape(sh)) autoFitFrame(sh);
+  });
   sel.onchange = ()=>{
     const val = sel.value;
     const f = FONTS[val];
     // レジストリの書体: オンライン書体だけ取得が要る。取得を待たずに適用し、届いたら再描画する
     if(f){
-      pushHistory(); one.font = val; autoFitFrame(one); render();
-      if(f.gf) ensureFontLoaded(val, textWeight(one)).then(()=>{ if(isFrameShape(one)) autoFitFrame(one); render(); });
+      pushHistory(); applyFont(val); render();
+      if(f.gf) ensureFontLoaded(val, textWeight(one)).then(()=>{ applyFont(val); render(); });
       return;
     }
-    if(isKnownFont(val)){ pushHistory(); one.font = val; autoFitFrame(one); render(); return; }
+    if(isKnownFont(val)){ pushHistory(); applyFont(val); render(); return; }
     // 読込中もセレクトは操作可能なままにし、続けて別の書体へすぐ切り替えられるようにする。
     // 古い読込が後から完了しても、その間に選ばれた新しい書体を上書きしないよう世代番号で判定する。
     const seq = ++fontSwitchSeq;
     setFontPreviewSample(val, fontSampleText(one));
     loadGoogleFont(val).then(fam=>{
       if(seq !== fontSwitchSeq) return;
-      pushHistory(); one.font = fam; autoFitFrame(one); render();
+      pushHistory(); applyFont(fam); render();
     }).catch(()=>{
       if(seq !== fontSwitchSeq) return;
       sel.value = one.font||'sans-serif';
@@ -2397,6 +2402,16 @@ function renderProps(){
   }
   const b = selBBox();
   const one = ss.length===1 ? ss[0] : null;
+  /* 同じ種類だけを選んでいるときは、その種類の設定をまとめて出す。
+     値の表示は先頭の図形（rep）を代表として使い、変更は選択中すべてに適用する */
+  const every = fn => ss.length>0 && ss.every(fn);
+  const rep = ss[0];
+  const allText  = every(s=>s.type==='text');
+  const allFrame = every(isFrameShape);
+  const allRect  = every(s=>s.type==='rect');
+  const allPoly  = every(s=>s.type==='poly');
+  const allPath  = every(s=>s.type==='path');
+  const allLineish = every(s=>s.type==='line' || (s.type==='path' && !s.closed));
   let html = `<div class="prow" style="color:var(--muted)">${one ? esc(one.name) : ss.length+'個の図形'}</div>`;
   html += `<div class="prow">` +
     `<label>X</label><input type="number" id="pX" value="${fmt(b.x)}">` +
@@ -2404,7 +2419,7 @@ function renderProps(){
   html += `<div class="prow">` +
     `<label>幅</label><input type="number" id="pW" value="${fmt(b.w)}">` +
     `<label>高さ</label><input type="number" id="pH" value="${fmt(b.h)}"></div>`;
-  if(one) html += rangeIn('pRot','回転',one.rotation||0,0,360,1,'°','図形の回転角');
+  if(rep) html += rangeIn('pRot','回転',rep.rotation||0,0,360,1,'°','図形の回転角');
   html += propRow(`<label>不透明</label><input type="range" id="pOp" min="0" max="1" step="0.05" value="${one?one.opacity:1}" style="flex:1">`);
   const isLine = one && one.type==='line';
   const isImage = one && one.type==='image';
@@ -2425,75 +2440,74 @@ function renderProps(){
   if(!isImage){
     html += colorInCMYK('pStroke','線', one ? one.stroke : styleNow.stroke, one ? one.strokeAlpha : styleNow.strokeAlpha);
     html += numIn('pSW','線幅', one ? one.strokeWidth : styleNow.strokeWidth, 0.5, 0, 200, 'px');
-    if(one){
-      const canArrow = one.type==='line' || (one.type==='path' && !one.closed);
+    if(rep){
       html += propRow(`<label>線種</label><select id="pDash">
-        <option value="solid" ${!one.dash||one.dash==='solid'?'selected':''}>実線</option>
-        <option value="dash" ${one.dash==='dash'?'selected':''}>破線</option>
-        <option value="dot" ${one.dash==='dot'?'selected':''}>点線</option></select>` +
-        (canArrow ? `<label class="toggle"><input type="checkbox" id="pArrS" ${one.arrowS?'checked':''}>←始</label>
-         <label class="toggle"><input type="checkbox" id="pArrE" ${one.arrowE?'checked':''}>終→</label>` : ''));
+        <option value="solid" ${!rep.dash||rep.dash==='solid'?'selected':''}>実線</option>
+        <option value="dash" ${rep.dash==='dash'?'selected':''}>破線</option>
+        <option value="dot" ${rep.dash==='dot'?'selected':''}>点線</option></select>` +
+        (allLineish ? `<label class="toggle"><input type="checkbox" id="pArrS" ${rep.arrowS?'checked':''}>←始</label>
+         <label class="toggle"><input type="checkbox" id="pArrE" ${rep.arrowE?'checked':''}>終→</label>` : ''));
     }
   }
 
-  if(one){
-    if(one.type==='rect') html += `<div class="pgroup">` + numIn('pRx','角丸',one.rx||0,1,0,2000,'px') + `</div>`;
-    if(one.type==='poly'){
-      html += `<div class="pgroup">` + numIn('pSides','辺数',one.sides,1,3,30,'角') +
-        (one.star ? rangeIn('pInner','内径比',one.inner,0.05,0.95,0.05,'','星の内側の半径比') : '') + `</div>`;
+  if(rep){
+    if(allRect) html += `<div class="pgroup">` + numIn('pRx','角丸',rep.rx||0,1,0,2000,'px') + `</div>`;
+    if(allPoly){
+      html += `<div class="pgroup">` + numIn('pSides','辺数',rep.sides,1,3,30,'角') +
+        (rep.star ? rangeIn('pInner','内径比',rep.inner,0.05,0.95,0.05,'','星の内側の半径比') : '') + `</div>`;
     }
-    if(one.type==='path'){
+    if(allPath){
       html += `<div class="pgroup">` +
-        propRow(`<label class="toggle"><input type="checkbox" id="pSmooth" ${one.smooth?'checked':''}>曲線化</label>
-                 <label class="toggle"><input type="checkbox" id="pClosed" ${one.closed?'checked':''}>閉じる</label>`) + `</div>`;
+        propRow(`<label class="toggle"><input type="checkbox" id="pSmooth" ${rep.smooth?'checked':''}>曲線化</label>
+                 <label class="toggle"><input type="checkbox" id="pClosed" ${rep.closed?'checked':''}>閉じる</label>`) + `</div>`;
     }
-    if(isFrameShape(one)){
+    if(allFrame){
       html += `<div class="pgroup">` +
-        propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text||'')}</textarea>`) +
-        numIn('pFrameSize','サイズ',one.size||16,1,4,800,'px') +
+        (one ? propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(rep.text||'')}</textarea>`) : '') +
+        numIn('pFrameSize','サイズ',rep.size||16,1,4,800,'px') +
         propRow(`<label class="toggle" title="文字を入れると、全文が収まる大きさに枠を自動で合わせます">
-          <input type="checkbox" id="pFrameFit" ${one.fitText!==false?'checked':''}>文字に合わせて枠を自動調整</label>`) +
-        rangeIn('pFrameLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
-        rangeIn('pFrameLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
+          <input type="checkbox" id="pFrameFit" ${rep.fitText!==false?'checked':''}>文字に合わせて枠を自動調整</label>`) +
+        rangeIn('pFrameLS','文字間',rep.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
+        rangeIn('pFrameLineH','行間',rep.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
         propRow(`<label>揃え</label><select id="pFrameAlign" style="flex:1" title="行の横方向の配置。均等割付は行末を枠の幅に揃えます">` +
-          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(one)===v?'selected':''}>${l}</option>`).join('') +
+          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
         propRow(`<label>縦位置</label><select id="pFrameValign" style="flex:1" title="枠の中での縦方向の配置。枠の自動調整がオフのときに効きます">` +
-          TEXT_VALIGNS.map(([v,l])=>`<option value="${v}" ${textValign(one)===v?'selected':''}>${l}</option>`).join('') +
+          TEXT_VALIGNS.map(([v,l])=>`<option value="${v}" ${textValign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
-        rangeIn('pFrameRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
-        rangeIn('pFrameRubyDy','ルビ位置',one.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
-        propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', one)}` +
+        rangeIn('pFrameRubyLS','ルビ間',rep.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
+        rangeIn('pFrameRubyDy','ルビ位置',rep.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
+        propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', rep)}` +
           ``) +
-        rangeIn('pFrameWeight','太さ',textWeight(one),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
+        rangeIn('pFrameWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
         propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
         fontWarnHTML() +
-        colorInCMYK('pFrameColor','文字色', one.textFill||'#111111') +
+        colorInCMYK('pFrameColor','文字色', rep.textFill||'#111111') +
         `</div>`;
     }
-    if(one.type==='text'){
+    if(rep.type==='text'){
       html += `<div class="pgroup">` +
-        propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) +
-        numIn('pSize','サイズ',one.size,1,4,800,'px') +
-        propRow(`<label>書体</label>${fontSelectHTML('pFont', one)}` +
+        (one ? propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) : '') +
+        numIn('pSize','サイズ',rep.size,1,4,800,'px') +
+        propRow(`<label>書体</label>${fontSelectHTML('pFont', rep)}` +
           ``) +
-        rangeIn('pWeight','太さ',textWeight(one),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
+        rangeIn('pWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
         propRow(`<label>書体見本</label><span id="pFontPreview" class="fontpreview"></span>`) +
         fontWarnHTML() +
-        rangeIn('pLS','文字間',one.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
-        rangeIn('pLineH','行間',one.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
-        rangeIn('pRubyLS','ルビ間',one.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
-        rangeIn('pRubyDy','ルビ位置',one.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
+        rangeIn('pLS','文字間',rep.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
+        rangeIn('pLineH','行間',rep.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
+        rangeIn('pRubyLS','ルビ間',rep.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
+        rangeIn('pRubyDy','ルビ位置',rep.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
         propRow(`<label>揃え</label><select id="pAlign" style="flex:1" title="行の横方向の配置。均等割付は行末を折返幅に揃えます">` +
-          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(one)===v?'selected':''}>${l}</option>`).join('') +
+          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
-        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(one.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">`) + `</div>`;
+        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(rep.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">`) + `</div>`;
     }
   }
   // 整列・重ね順
@@ -2530,33 +2544,44 @@ function renderProps(){
     resizeSel({x:cb.x, y:cb.y, w:v, h:cb.h*(aspectLocked()? v/cb.w : 1)}); });
   bindGeom('pH', v=>{ const cb=selBBox(); if(v<1)return;
     resizeSel({x:cb.x, y:cb.y, w:cb.w*(aspectLocked()? v/cb.h : 1), h:v}); });
-  if(one){
-    bindRange('pRot', v=>{ one.rotation = ((v%360)+360)%360; }, '°');
-    bindGeom('pRx', v=>{ one.rx = Math.max(0,v); });
-    bindGeom('pSides', v=>{ one.sides = clamp(Math.round(v),3,30); });
-    bindRange('pInner', v=>{ one.inner = clamp(v,0.05,0.95); }, '', 2);
-    bindGeom('pSize', v=>{ one.size = Math.max(4,v); });
-    const pft = $('pFrameText'); if(pft) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined; if(one.text && !one.size) one.size = 16; autoFitFrame(one); render(); };
-    const pfs = $('pFrameSize'); if(pfs) pfs.onchange = ()=>{ startEdit(); one.size = Math.max(4,+pfs.value); autoFitFrame(one); render(); };
-    bindFontSelect('pFrameFont', one);
+  if(rep){
+    // 見た目の設定は選択中すべてに適用する。内容（文字そのもの）は単体選択のときだけ編集する
+    const each = fn => selShapes().forEach(fn);
+    const eachFit = fn => { each(sh=>{ fn(sh); if(isFrameShape(sh)) autoFitFrame(sh); }); };
+    bindRange('pRot', v=>{ const r=((v%360)+360)%360; each(sh=> sh.rotation = r); }, '°');
+    bindGeom('pRx', v=>{ const r=Math.max(0,v); each(sh=> sh.rx = r); });
+    bindGeom('pSides', v=>{ const n=clamp(Math.round(v),3,30); each(sh=> sh.sides = n); });
+    bindRange('pInner', v=>{ const i=clamp(v,0.05,0.95); each(sh=> sh.inner = i); }, '', 2);
+    bindGeom('pSize', v=>{ const z=Math.max(4,v); each(sh=> sh.size = z); });
+    const pft = $('pFrameText');
+    if(pft && one) pft.onchange = ()=>{ startEdit(); one.text = pft.value || undefined;
+      if(one.text && !one.size) one.size = 16; autoFitFrame(one); render(); };
+    const pfs = $('pFrameSize');
+    if(pfs) pfs.onchange = ()=>{ startEdit(); const z=Math.max(4,+pfs.value);
+      eachFit(sh=> sh.size = z); render(); };
+    bindFontSelect('pFrameFont', rep);
     const setWeight = v=>{
-      one.weight = clamp(Math.round(v/100)*100, 100, 900);
-      delete one.bold;                 // 太さ指定に一本化する（boldは旧データ互換のみ）
-      ensureWeightLoaded(one.font, one.weight);
-      autoFitFrame(one);
+      const w = clamp(Math.round(v/100)*100, 100, 900);
+      eachFit(sh=>{
+        sh.weight = w;
+        delete sh.bold;                 // 太さ指定に一本化する（boldは旧データ互換のみ）
+        ensureWeightLoaded(sh.font, w);
+      });
     };
     bindRange('pFrameWeight', setWeight, '');
     bindRange('pWeight', setWeight, '');
     const pfit = $('pFrameFit');
-    if(pfit) pfit.onchange = ()=>{ startEdit(); one.fitText = pfit.checked; autoFitFrame(one); render(); };
+    if(pfit) pfit.onchange = ()=>{ startEdit(); const v=pfit.checked;
+      eachFit(sh=> sh.fitText = v); render(); };
     bindColorCMYK('pFrameColor','textFill');
-    const pt = $('pText'); if(pt) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
-    bindFontSelect('pFont', one);
+    const pt = $('pText');
+    if(pt && one) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
+    bindFontSelect('pFont', rep);
 
     bindAutoGrow('pText'); bindAutoGrow('pFrameText');
-    initFontPreview(one);
-    updateFontMissingWarn(one);
-    bindFontCheck(one);
+    initFontPreview(rep);
+    updateFontMissingWarn(rep);
+    bindFontCheck(rep);
     const pfl = $('pFontLoad');
     if(pfl) pfl.onclick = ()=>{
       const name = $('pFontName').value.trim();
@@ -2566,7 +2591,7 @@ function renderProps(){
       loadGoogleFont(name)
         .then(fam=>{
           if(seq !== fontSwitchSeq) return;
-          startEdit(); one.font = fam; render();
+          startEdit(); eachFit(sh=> sh.font = fam); render();
         })
         .catch(()=>{
           if(seq !== fontSwitchSeq) return;
@@ -2575,36 +2600,40 @@ function renderProps(){
     };
     const pff = $('pFontFile'); if(pff) pff.onclick = ()=> $('fontInput').click();
     const pbw = $('pBoxW');
-    if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value; one.boxW = v>0 ? Math.max(10,v) : undefined; render(); };
+    if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value;
+      each(sh=> sh.boxW = v>0 ? Math.max(10,v) : undefined); render(); };
     // 画像の縮尺・縦横比
     const plock = $('pLockAspect');
-    if(plock) plock.onchange = ()=>{ startEdit(); one.lockAspect = plock.checked; render(); };
-    bindRange('pImgScale', v=>{ setImageScalePct(one, v); }, '%');
+    if(plock) plock.onchange = ()=>{ startEdit(); const v=plock.checked;
+      each(sh=> sh.lockAspect = v); render(); };
+    bindRange('pImgScale', v=>{ each(sh=>{ if(sh.type==='image') setImageScalePct(sh, v); }); }, '%');
     const preset = $('pImgReset');
-    if(preset) preset.onclick = ()=>{ startEdit(); setImageScalePct(one, 100); render(); };
+    if(preset) preset.onclick = ()=>{ startEdit();
+      each(sh=>{ if(sh.type==='image') setImageScalePct(sh, 100); }); render(); };
     // 揃え・縦位置。旧データのjustifyは残さず、alignに一本化する
     const bindSel = (id, fn)=>{
       const el = $(id); if(!el) return;
-      el.onchange = ()=>{ startEdit(); fn(el.value); autoFitFrame(one); render(); };
+      el.onchange = ()=>{ startEdit(); fn(el.value); render(); };
     };
-    const setAlign = v=>{ one.align = v; delete one.justify; };
+    const setAlign = v=> eachFit(sh=>{ sh.align = v; delete sh.justify; });
     bindSel('pAlign', setAlign);
     bindSel('pFrameAlign', setAlign);
-    bindSel('pFrameValign', v=>{ one.valign = v; });
+    bindSel('pFrameValign', v=> each(sh=> sh.valign = v));
     // 文字組みの数値はスライダーで即時反映（キャプション工房と共通仕様）
-    const setLS   = v=>{ one.ls = v ? clamp(v,-20,100) : undefined; autoFitFrame(one); };
-    const setLineH= v=>{ one.lineH = clamp(v,0.5,4); autoFitFrame(one); };
-    const setRbLS = v=>{ one.rubyLS = v ? clamp(v,-10,50) : undefined; autoFitFrame(one); };
-    const setRbDy = v=>{ one.rubyDy = v ? clamp(v,-50,50) : undefined; autoFitFrame(one); };
+    const setLS   = v=> eachFit(sh=> sh.ls = v ? clamp(v,-20,100) : undefined);
+    const setLineH= v=> eachFit(sh=> sh.lineH = clamp(v,0.5,4));
+    const setRbLS = v=> eachFit(sh=> sh.rubyLS = v ? clamp(v,-10,50) : undefined);
+    const setRbDy = v=> eachFit(sh=> sh.rubyDy = v ? clamp(v,-50,50) : undefined);
     bindRange('pLS', setLS, 'px');            bindRange('pFrameLS', setLS, 'px');
     bindRange('pLineH', setLineH, '', 2);     bindRange('pFrameLineH', setLineH, '', 2);
     bindRange('pRubyLS', setRbLS, 'px');      bindRange('pFrameRubyLS', setRbLS, 'px');
     bindRange('pRubyDy', setRbDy, 'px');      bindRange('pFrameRubyDy', setRbDy, 'px');
-    const psm = $('pSmooth'); if(psm) psm.onchange = ()=>{ startEdit(); one.smooth = psm.checked; render(); };
-    const pcl = $('pClosed'); if(pcl) pcl.onchange = ()=>{ startEdit(); one.closed = pcl.checked; render(); };
-    const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); one.dash = pd.value; render(); };
-    const pas = $('pArrS'); if(pas) pas.onchange = ()=>{ startEdit(); one.arrowS = pas.checked; render(); };
-    const pae = $('pArrE'); if(pae) pae.onchange = ()=>{ startEdit(); one.arrowE = pae.checked; render(); };
+    const chk = (id, fn)=>{ const el=$(id); if(el) el.onchange = ()=>{ startEdit(); each(sh=>fn(sh, el.checked)); render(); }; };
+    chk('pSmooth', (sh,v)=> sh.smooth = v);
+    chk('pClosed', (sh,v)=> sh.closed = v);
+    chk('pArrS',   (sh,v)=> sh.arrowS = v);
+    chk('pArrE',   (sh,v)=> sh.arrowE = v);
+    const pd = $('pDash'); if(pd) pd.onchange = ()=>{ startEdit(); each(sh=> sh.dash = pd.value); render(); };
   }
   const op = $('pOp');
   op.oninput = ()=>{ selShapes().forEach(s=>s.opacity=+op.value); styleNow.opacity=+op.value;
