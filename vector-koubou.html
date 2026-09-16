@@ -1609,13 +1609,9 @@ window.addEventListener('pointermove', e=>{
     if(h.includes('s')) nb.h = Math.max(1, snapY(p.y) - ob.y);
     if(h.includes('w')){ const nx = Math.min(snapX(p.x), ob.x+ob.w-1); nb.w = ob.x+ob.w-nx; nb.x = nx; }
     if(h.includes('n')){ const ny = Math.min(snapY(p.y), ob.y+ob.h-1); nb.h = ob.y+ob.h-ny; nb.y = ny; }
-    if(e.shiftKey && h.length===2){
-      const k = Math.max(nb.w/ob.w, nb.h/ob.h);
-      const nw = ob.w*k, nh = ob.h*k;
-      if(h.includes('w')) nb.x = ob.x+ob.w-nw;
-      if(h.includes('n')) nb.y = ob.y+ob.h-nh;
-      nb.w = nw; nb.h = nh;
-    }
+    // 画像はShiftを押していないときに縦横比を保つ（他の図形はShiftで保つ、従来どおり）
+    const lock = aspectLocked() ? !e.shiftKey : (e.shiftKey && h.length===2);
+    if(lock) nb = keepAspectBox(ob, nb, h);
     const orig = JSON.parse(drag.orig);
     selShapes().forEach((s,i)=> bboxTransform(s, orig[i], ob, nb));
     render();
@@ -1757,6 +1753,40 @@ function translateShape(s, o, dx, dy){
     case 'text': s.x=o.x+dx; s.y=o.y+dy; break;
     case 'image': s.x=o.x+dx; s.y=o.y+dy; break;
   }
+}
+/* 画像は既定で縦横比を保つ。写真を引き伸ばすのはほぼ意図しない操作のため。
+   Shiftを押しながら、または「縦横比を固定」を外すと自由に変形できる */
+function aspectLocked(shapes){
+  const ss = shapes || selShapes();
+  return ss.length===1 && ss[0].type==='image' && ss[0].lockAspect!==false;
+}
+/* 取り込み時の画素数を100%としたときの現在の倍率 */
+function imageScaleBase(s){
+  return (s.natW && s.natH) ? {w:s.natW, h:s.natH} : {w:s.w, h:s.h};
+}
+function imageScalePct(s){
+  const base = imageScaleBase(s);
+  return base.w ? (s.w/base.w)*100 : 100;
+}
+/* 左上を動かさずに、原寸に対する倍率で拡大・縮小する */
+function setImageScalePct(s, pct){
+  const base = imageScaleBase(s);
+  const k = clamp(+pct||100, 5, 400)/100;
+  s.w = Math.max(1, base.w*k);
+  s.h = Math.max(1, base.h*k);
+}
+/* 縦横比を保った新しい外接矩形。掴んだハンドルの側を固定して伸縮する */
+function keepAspectBox(ob, nb, handle){
+  if(!ob.w || !ob.h) return nb;
+  // 角は動かした量の大きいほうに合わせ、辺は動かした軸に合わせる
+  const k = (handle && handle.length===2)
+    ? Math.max(nb.w/ob.w, nb.h/ob.h)
+    : (handle && /[ew]/.test(handle)) ? nb.w/ob.w : nb.h/ob.h;
+  const w = Math.max(1, ob.w*k), h = Math.max(1, ob.h*k);
+  const out = {x:nb.x, y:nb.y, w, h};
+  if(handle && handle.includes('w')) out.x = ob.x+ob.w-w; else out.x = ob.x;
+  if(handle && handle.includes('n')) out.y = ob.y+ob.h-h; else out.y = ob.y;
+  return out;
 }
 function bboxTransform(s, o, ob, nb){
   const sx = ob.w ? nb.w/ob.w : 1, sy = ob.h ? nb.h/ob.h : 1;
@@ -2378,6 +2408,17 @@ function renderProps(){
   html += propRow(`<label>不透明</label><input type="range" id="pOp" min="0" max="1" step="0.05" value="${one?one.opacity:1}" style="flex:1">`);
   const isLine = one && one.type==='line';
   const isImage = one && one.type==='image';
+  if(isImage){
+    // 原寸（取り込み時の画素数）に対する現在の倍率。原寸が不明な旧データは現在値を100%とする
+    const pct = Math.round(imageScalePct(one));
+    html += `<div class="pgroup">` +
+      propRow(`<label class="toggle" title="拡大・縮小しても画像の縦横比を保ちます。外すと自由に変形できます（固定中はShiftを押している間だけ自由変形）">
+        <input type="checkbox" id="pLockAspect" ${one.lockAspect!==false?'checked':''}>縦横比を固定</label>`) +
+      rangeIn('pImgScale','縮尺',pct,5,400,1,'%','原寸に対する倍率。縦横比を保ったまま拡大・縮小します') +
+      propRow(`<button id="pImgReset" title="取り込んだときの画素数と同じ大きさに戻します">原寸に戻す</button>
+        <span style="font-size:10px;color:var(--muted)">${one.natW?`原寸 ${one.natW}×${one.natH}px`:'原寸不明'}</span>`) +
+      `</div>`;
+  }
   if(!isLine && !isImage){
     html += one ? fillPanel(one) : colorInCMYK('pFill','塗り', styleNow.fill, styleNow.fillAlpha);
   }
@@ -2480,10 +2521,15 @@ function renderProps(){
     const o=JSON.parse(orig); selShapes().forEach((s,i)=>translateShape(s,o[i],v-cb.x,0)); });
   bindGeom('pY', v=>{ const cb=selBBox(); const orig=JSON.stringify(selShapes());
     const o=JSON.parse(orig); selShapes().forEach((s,i)=>translateShape(s,o[i],0,v-cb.y)); });
-  bindGeom('pW', v=>{ const cb=selBBox(); if(v<1)return; const o=JSON.parse(JSON.stringify(selShapes()));
-    selShapes().forEach((s,i)=>bboxTransform(s,o[i],cb,{x:cb.x,y:cb.y,w:v,h:cb.h})); });
-  bindGeom('pH', v=>{ const cb=selBBox(); if(v<1)return; const o=JSON.parse(JSON.stringify(selShapes()));
-    selShapes().forEach((s,i)=>bboxTransform(s,o[i],cb,{x:cb.x,y:cb.y,w:cb.w,h:v})); });
+  const resizeSel = (nb)=>{
+    const cb = selBBox();
+    const o = JSON.parse(JSON.stringify(selShapes()));
+    selShapes().forEach((s,i)=> bboxTransform(s, o[i], cb, nb));
+  };
+  bindGeom('pW', v=>{ const cb=selBBox(); if(v<1)return;
+    resizeSel({x:cb.x, y:cb.y, w:v, h:cb.h*(aspectLocked()? v/cb.w : 1)}); });
+  bindGeom('pH', v=>{ const cb=selBBox(); if(v<1)return;
+    resizeSel({x:cb.x, y:cb.y, w:cb.w*(aspectLocked()? v/cb.h : 1), h:v}); });
   if(one){
     bindRange('pRot', v=>{ one.rotation = ((v%360)+360)%360; }, '°');
     bindGeom('pRx', v=>{ one.rx = Math.max(0,v); });
@@ -2530,6 +2576,12 @@ function renderProps(){
     const pff = $('pFontFile'); if(pff) pff.onclick = ()=> $('fontInput').click();
     const pbw = $('pBoxW');
     if(pbw) pbw.onchange = ()=>{ startEdit(); const v = +pbw.value; one.boxW = v>0 ? Math.max(10,v) : undefined; render(); };
+    // 画像の縮尺・縦横比
+    const plock = $('pLockAspect');
+    if(plock) plock.onchange = ()=>{ startEdit(); one.lockAspect = plock.checked; render(); };
+    bindRange('pImgScale', v=>{ setImageScalePct(one, v); }, '%');
+    const preset = $('pImgReset');
+    if(preset) preset.onclick = ()=>{ startEdit(); setImageScalePct(one, 100); render(); };
     // 揃え・縦位置。旧データのjustifyは残さず、alignに一本化する
     const bindSel = (id, fn)=>{
       const el = $(id); if(!el) return;
