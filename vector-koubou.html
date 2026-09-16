@@ -595,18 +595,83 @@ function segmentWords(text){
   });
   return out;
 }
+/* ===== 部分書式（ラン） =====
+   テキストの一部だけ書体・大きさ・太さ・色を変えるため、文字位置の範囲で上書きを持つ。
+   範囲は s.text 上の文字インデックス [s,e)。 */
+const RUN_KEYS = ['font','size','weight','fill'];
+function normalizeRuns(sh){
+  const len = String(sh.text||'').length;
+  const runs = (sh.runs||[])
+    .map(r=>({...r, s:Math.max(0,Math.min(len,r.s|0)), e:Math.max(0,Math.min(len,r.e|0))}))
+    .filter(r=> r.e > r.s && RUN_KEYS.some(k=> r[k]!=null));
+  if(runs.length) sh.runs = runs; else delete sh.runs;
+  return sh.runs || [];
+}
+/* 文字ごとの実効書式。図形全体の指定にランを重ねる */
+function charAttrs(sh){
+  const len = String(sh.text||'').length;
+  const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh), fill:null};
+  const out = new Array(len);
+  for(let i=0;i<len;i++) out[i] = base;
+  (sh.runs||[]).forEach(r=>{
+    for(let i=Math.max(0,r.s); i<Math.min(len,r.e); i++){
+      const a = {...out[i]};
+      RUN_KEYS.forEach(k=>{ if(r[k]!=null) a[k] = r[k]; });
+      if(r.weight!=null) a.weight = clamp(Math.round(r.weight/100)*100,100,900);
+      out[i] = a;
+    }
+  });
+  return out;
+}
+function attrKey(a){ return a.font+'|'+a.size+'|'+a.weight+'|'+(a.fill||''); }
+/* 指定範囲に書式を適用する。既存のランと重なる部分は分割して整理する */
+function applyRunFormat(sh, start, end, attrs){
+  const len = String(sh.text||'').length;
+  start = Math.max(0, Math.min(len, start|0));
+  end   = Math.max(0, Math.min(len, end|0));
+  if(end <= start) return false;
+  const per = charAttrs(sh);
+  const cleared = RUN_KEYS.every(k=> attrs[k]==null);
+  // いったん文字ごとに展開してから、同じ書式の連続をまとめ直す
+  const want = per.map((a,i)=>{
+    if(i<start || i>=end) return a;
+    if(cleared) return null;                      // 解除: 図形全体の指定へ戻す
+    const n = {...a};
+    RUN_KEYS.forEach(k=>{ if(attrs[k]!=null) n[k] = attrs[k]; });
+    return n;
+  });
+  const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh), fill:null};
+  const runs = [];
+  for(let i=0;i<len;i++){
+    const a = want[i];
+    if(!a || attrKey(a)===attrKey(base)) continue;
+    const prev = runs[runs.length-1];
+    if(prev && prev.e===i && attrKey(prev.__a)===attrKey(a)){ prev.e = i+1; continue; }
+    const r = {s:i, e:i+1, __a:a};
+    RUN_KEYS.forEach(k=>{ if(a[k]!=null && a[k]!==base[k]) r[k] = a[k]; });
+    runs.push(r);
+  }
+  sh.runs = runs.map(r=>{ const {__a, ...rest} = r; return rest; });
+  normalizeRuns(sh);
+  return true;
+}
 /* ルビ記法（青空文庫式）: 漢字《かんじ》 は直前の漢字連続部に、｜対象《るび》 は｜以降に振る */
 const RUBY_RE = /(?:[｜|])([^《》｜|\n]{1,50})《([^《》\n]{1,50})》|([々㐀-鿿豈-﫿々〆ヵヶ]+)《([^《》\n]{1,50})》/g;
-function tokenizeRuby(para){
+/* base は para が元テキストの何文字目から始まるか。返す各トークンの idx は元テキスト上の位置。
+   部分書式を文字位置で引くために必要 */
+function tokenizeRuby(para, base){
+  const b = base || 0;
   const out = [];
   let last = 0, m;
   RUBY_RE.lastIndex = 0;
   while((m = RUBY_RE.exec(para))){
-    if(m.index > last) out.push({t: para.slice(last, m.index)});
-    out.push(m[1]!==undefined ? {t:m[1], r:m[2]} : {t:m[3], r:m[4]});
+    if(m.index > last) out.push({t: para.slice(last, m.index), idx: b+last});
+    // ｜対象《るび》 は ｜ の次から、漢字《るび》 は一致の先頭から本文が始まる
+    const baseStart = m[1]!==undefined ? m.index+1 : m.index;
+    out.push(m[1]!==undefined ? {t:m[1], r:m[2], idx:b+baseStart} : {t:m[3], r:m[4], idx:b+baseStart});
     last = RUBY_RE.lastIndex;
   }
-  if(last < para.length) out.push({t: para.slice(last)});
+  if(last < para.length) out.push({t: para.slice(last), idx: b+last});
   return out;
 }
 /* 文字の配置。旧データは均等割付のON/OFF（justify）だけを持つので、それを引き継ぐ */
@@ -624,44 +689,77 @@ function lineWidth(ln, spec){
   const ls = (+spec.ls || 0);
   return measureCtx.measureText(t).width + ls*Math.max(0, t.length-1);
 }
+/* 文字幅の計測。部分書式が無ければ従来どおり文字列単位で測り（字詰めが保たれる）、
+   ある場合だけ文字ごとに測って合算する */
+function makeMeasurer(sh){
+  const baseLS = +sh.ls || 0;
+  const runs = normalizeRuns(sh);
+  const setFont = a => { measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; };
+  if(!runs.length){
+    setFont({font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)});
+    return { seg: g => measureCtx.measureText(g.t).width + baseLS*g.t.length,
+             charW: () => 0, perChar:false, attrs:null };
+  }
+  const attrs = charAttrs(sh);
+  const cw = new Array(attrs.length).fill(0);
+  const text = String(sh.text||'');
+  let key = null;
+  for(let i=0;i<attrs.length;i++){
+    const k = attrKey(attrs[i]);
+    if(k !== key){ setFont(attrs[i]); key = k; }
+    cw[i] = measureCtx.measureText(text.charAt(i)).width;
+  }
+  const seg = g => {
+    let sum = 0;
+    for(let k=0;k<g.t.length;k++) sum += (cw[g.idx+k] || 0) + baseLS;
+    return sum;
+  };
+  return { seg, charW: i => cw[i]||0, perChar:true, attrs };
+}
 function layoutText(s){
-  measureCtx.font = `${textWeight(s)} ${s.size}px ${fontFamilyAttr(s.font)}`;
+  normalizeRuns(s);
+  const mz = makeMeasurer(s);
   const baseLS = +s.ls || 0;   // 文字間（ユーザー指定、px）
-  const w = t => measureCtx.measureText(t).width + baseLS*t.length;
+  const wSegs = segs => segs.reduce((a,g)=> a + mz.seg(g), 0);
   const out = [];
   const mkLine = (segs, last)=>{
     const text = segs.map(g=>g.t).join('');
     let ls = baseLS;
     // 行末揃え: 枠幅との差を文字間に均等配分（最大0.25em、不自然な広がりを防ぐ）
     if(s.boxW && textAlign(s)==='justify' && !last && text.length>1){
-      ls = baseLS + clamp((s.boxW - w(text))/text.length, 0, s.size*0.25);
+      ls = baseLS + clamp((s.boxW - wSegs(segs))/text.length, 0, s.size*0.25);
     }
     const ruby = []; let pos = 0;
     segs.forEach(g=>{ if(g.r) ruby.push({start:pos, len:g.t.length, r:g.r}); pos += g.t.length; });
-    return {text, ls: Math.round(ls*100)/100, ruby};
+    return {text, ls: Math.round(ls*100)/100, ruby, segs};
   };
+  let base = 0;
   String(s.text).split('\n').forEach(para=>{
+    const paraStart = base;
+    base += para.length + 1;        // 改行ぶんを足して次の段落の開始位置にする
     const toks = [];
-    tokenizeRuby(para).forEach(tk=>{
-      if(tk.r) toks.push(tk);   // ルビ付き部分は折返しで分割しない
-      else segmentWords(tk.t).forEach(u=> toks.push({t:u}));
+    tokenizeRuby(para, paraStart).forEach(tk=>{
+      if(tk.r){ toks.push(tk); return; }   // ルビ付き部分は折返しで分割しない
+      let off = 0;
+      segmentWords(tk.t).forEach(u=>{ toks.push({t:u, idx:tk.idx+off}); off += u.length; });
     });
     if(!s.boxW || !para){ out.push(mkLine(toks, true)); return; }
     let cur = [];
-    const curText = ()=> cur.map(g=>g.t).join('');
     toks.forEach(tk=>{
-      if(cur.length && w(curText()+tk.t) > s.boxW){
+      if(cur.length && wSegs(cur.concat([tk])) > s.boxW){
         out.push(mkLine(cur, false));
-        cur = [tk.r ? tk : {t: tk.t.replace(/^\s+/,'')}];
+        const trimmed = tk.r ? tk : {t: tk.t.replace(/^\s+/,''), idx: tk.idx + (tk.t.length - tk.t.replace(/^\s+/,'').length)};
+        cur = [trimmed];
       }else cur.push(tk);
       // 1単語が枠より長い場合のみ、やむを得ず文字単位で分割（ルビ付きは分割しない）
-      while(cur.length===1 && !cur[0].r && cur[0].t.length>1 && w(cur[0].t) > s.boxW){
-        const u = cur[0].t;
+      while(cur.length===1 && !cur[0].r && cur[0].t.length>1 && mz.seg(cur[0]) > s.boxW){
+        const g = cur[0], u = g.t;
         let k = u.length-1;
-        while(k>1 && w(u.slice(0,k)) > s.boxW) k--;
+        while(k>1 && mz.seg({t:u.slice(0,k), idx:g.idx}) > s.boxW) k--;
         k = kinsokuBreak(u, k);
-        out.push(mkLine([{t:u.slice(0,k)}], false));
-        cur = [{t: u.slice(k).replace(/^\s+/,'')}];
+        out.push(mkLine([{t:u.slice(0,k), idx:g.idx}], false));
+        const restRaw = u.slice(k), rest = restRaw.replace(/^\s+/,'');
+        cur = [{t: rest, idx: g.idx + k + (restRaw.length - rest.length)}];
       }
     });
     out.push(mkLine(cur, true));
@@ -673,44 +771,95 @@ function layoutText(s){
 function buildTextLines(t, spec, x, y0, lines){
   const NS = 'http://www.w3.org/2000/svg';
   const size = spec.size, lh = (spec.lineH || 1.25)*size;
-  measureCtx.font = `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+  const mz = makeMeasurer(spec);
+  const attrs = mz.attrs;                 // 部分書式がある場合のみ非null
+  const baseLS = +spec.ls || 0;
   const rows = lines || layoutText(spec);
   const align = textAlign(spec);
-  // 寄せの基準幅。折返し幅があればそれ、無ければ一番長い行（改行だけの複数行を揃えるため）
-  const refW = spec.boxW || Math.max(0, ...rows.map(ln=> lineWidth(ln, spec)));
+  // 行の実寸（均等割付で広げる前の幅）
+  const lineW = ln => (ln.segs ? ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS : 0);
+  const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
   const offsetOf = ln=>{
-    if(align==='center') return Math.max(0, (refW - lineWidth(ln, spec))/2);
-    if(align==='right')  return Math.max(0, refW - lineWidth(ln, spec));
+    if(align==='center') return Math.max(0, (refW - lineW(ln))/2);
+    if(align==='right')  return Math.max(0, refW - lineW(ln));
     return 0;            // left と justify は行頭から
   };
+  /* 行を「同じ書式が続く区間」に割る。区間ごとにtspanを出し、
+     2つ目以降はx指定なしで前の続きから流す */
+  const pieces = ln=>{
+    const segs = ln.segs || [{t:ln.text, idx:0}];
+    if(!attrs) return [{t:segs.map(g=>g.t).join(''), a:null}];
+    const out = [];
+    segs.forEach(g=>{
+      for(let k=0;k<g.t.length;k++){
+        const a = attrs[g.idx+k] || null;
+        const prev = out[out.length-1];
+        if(prev && a && prev.a && attrKey(prev.a)===attrKey(a)) prev.t += g.t.charAt(k);
+        else out.push({t:g.t.charAt(k), a});
+      }
+    });
+    return out;
+  };
+  // 行内で一番大きい文字に合わせて行送りを決める（部分的に大きくしても重ならないように）
+  const rowSize = ln=>{
+    if(!attrs || !ln.segs) return size;
+    let mx = size;
+    ln.segs.forEach(g=>{ for(let k=0;k<g.t.length;k++){
+      const a = attrs[g.idx+k]; if(a && a.size>mx) mx = a.size; } });
+    return mx;
+  };
+  let y = y0;
   rows.forEach((ln,i)=>{
-    const y = y0 + i*lh;
+    // 行送りは前後の行のうち大きいほうに合わせる（部分的に大きくした行が重ならないように）
+    if(i>0) y += Math.max(lh, Math.max(rowSize(rows[i-1]), rowSize(ln))*(spec.lineH || 1.25));
     const x0 = x + offsetOf(ln);
-    const tp = document.createElementNS(NS,'tspan');
-    tp.setAttribute('x',fmt(x0)); tp.setAttribute('y',fmt(y));
-    if(ln.ls) tp.setAttribute('letter-spacing', ln.ls);
-    tp.textContent = ln.text || ' ';
-    t.appendChild(tp);
+    const parts = pieces(ln);
+    parts.forEach((pc,pi)=>{
+      const tp = document.createElementNS(NS,'tspan');
+      if(pi===0){ tp.setAttribute('x',fmt(x0)); tp.setAttribute('y',fmt(y)); }
+      if(ln.ls) tp.setAttribute('letter-spacing', ln.ls);
+      if(pc.a){
+        tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
+        tp.setAttribute('font-size', fmt(pc.a.size));
+        tp.setAttribute('font-weight', String(pc.a.weight));
+        if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
+      }
+      tp.textContent = pc.t || (parts.length===1 ? ' ' : '');
+      t.appendChild(tp);
+    });
     (ln.ruby||[]).forEach(rb=>{
-      const pre = ln.text.slice(0, rb.start);
-      const base = ln.text.slice(rb.start, rb.start+rb.len);
-      const preW = measureCtx.measureText(pre).width + ln.ls*pre.length;
-      const rubyY = y - size*0.85 - (+spec.rubyDy||0);
+      const segs = ln.segs || [{t:ln.text, idx:0}];
+      // 行頭から rb.start 文字目までの幅、およびルビの付く範囲の幅
+      const chars = [];
+      segs.forEach(g=>{ for(let k=0;k<g.t.length;k++) chars.push({c:g.t.charAt(k), i:g.idx+k}); });
+      const wOf = (from, to)=>{
+        let sum = 0;
+        for(let k=from;k<to && k<chars.length;k++){
+          const a = attrs ? attrs[chars[k].i] : null;
+          measureCtx.font = a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
+                              : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+          sum += measureCtx.measureText(chars[k].c).width + ln.ls;
+        }
+        return sum;
+      };
+      const preW = wOf(0, rb.start);
+      const rubySize = (attrs && attrs[chars[rb.start] ? chars[rb.start].i : 0]
+                        ? attrs[chars[rb.start].i].size : size);
+      const rubyY = y - rubySize*0.85 - (+spec.rubyDy||0);
       // ルビ内のスペース（半角・全角）区切りで基底1文字ずつに割り当てる（モノルビ）
       const groups = rb.r.split(/[ 　]+/).filter(g=>g);
       const targets = [];
       if(groups.length > 1){
-        const chars = [...base];
-        chars.forEach((c,i)=>{ if(i < groups.length) targets.push({b:c, r:groups[i], pre:chars.slice(0,i).join('')}); });
-        if(groups.length > chars.length) targets[targets.length-1].r += groups.slice(chars.length).join('');
-      }else targets.push({b:base, r:rb.r, pre:''});
+        for(let k=0;k<rb.len;k++){
+          if(k < groups.length) targets.push({from:rb.start+k, to:rb.start+k+1, r:groups[k]});
+        }
+        if(groups.length > rb.len && targets.length) targets[targets.length-1].r += groups.slice(rb.len).join('');
+      }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
       targets.forEach(tg=>{
-        const offW = measureCtx.measureText(tg.pre).width + ln.ls*tg.pre.length;
-        const baseW = measureCtx.measureText(tg.b).width + ln.ls*Math.max(0, tg.b.length-1);
         const rt = document.createElementNS(NS,'tspan');
-        rt.setAttribute('x', fmt(x0 + preW + offW + baseW/2));
+        rt.setAttribute('x', fmt(x0 + preW + wOf(rb.start, tg.from) + wOf(tg.from, tg.to)/2));
         rt.setAttribute('y', fmt(rubyY));
-        rt.setAttribute('font-size', fmt(size*0.5));
+        rt.setAttribute('font-size', fmt(rubySize*0.5));
         rt.setAttribute('text-anchor','middle');
         if(spec.rubyLS) rt.setAttribute('letter-spacing', spec.rubyLS);
         rt.textContent = tg.r;
@@ -719,8 +868,6 @@ function buildTextLines(t, spec, x, y0, lines){
     });
   });
 }
-
-/* ================= グラデーション ================= */
 function gradientId(s){ return 'grad'+s.id; }
 function gradientDefString(s){
   const g = s.fill, gid = gradientId(s);
@@ -2146,7 +2293,9 @@ function setFontPreviewSample(fam, sampleText){
 function fontSelectHTML(id, one){
   const loadedExtra = [...state.webFonts, ...(state.customFonts||[]).map(c=>c.name)]
     .filter(f=> !FONTS[f]);
-  let html = `<select id="${id}" style="flex:1">`;
+  // 部分書式用: 空の書体を渡すと先頭に「そのまま（変更しない）」が付く
+  let html = `<select id="${id}" style="flex:1">` +
+    (one && one.font==='' ? `<option value="">そのまま</option>` : '');
   FONT_GROUP_ORDER.forEach(group=>{
     const keys = Object.keys(FONTS).filter(k=> FONTS[k].group===group);
     if(!keys.length) return;
@@ -2159,6 +2308,47 @@ function fontSelectHTML(id, one){
       loadedExtra.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('') + `</optgroup>`;
   }
   return html + `</select>`;
+}
+/* 一部の文字だけの書式。上の本文欄で文字を選んでから適用する */
+function partFormatHTML(one){
+  return `<div class="pgroup">` +
+    propRow(`<span style="font-size:11px;color:var(--muted)">部分書式（上の本文欄で文字を選んでから）</span>`) +
+    propRow(`<label>書体</label>${fontSelectHTML('pPartFont', {font:''})}`) +
+    propRow(`<label>サイズ</label><input type="number" id="pPartSize" placeholder="そのまま" min="4" max="800" step="1">
+      <span style="font-size:10px;color:var(--muted)">px</span>
+      <label>太さ</label><input type="number" id="pPartWeight" placeholder="そのまま" min="100" max="900" step="100">`) +
+    propRow(`<label>文字色</label><input type="color" id="pPartFill" value="#111111">
+      <label class="toggle"><input type="checkbox" id="pPartFillOn">色も変える</label>`) +
+    propRow(`<button id="pPartApply">選択範囲に適用</button>
+      <button id="pPartClear" title="選択範囲の部分書式を外し、テキスト全体の設定に戻します">解除</button>
+      <span id="pPartMsg" style="font-size:10px;color:var(--muted)"></span>`) +
+    `</div>`;
+}
+function bindPartFormat(one){
+  const ta = $('pText'), apply = $('pPartApply'), clear = $('pPartClear'), msg = $('pPartMsg');
+  if(!ta || !apply) return;
+  const range = ()=>({s: ta.selectionStart|0, e: ta.selectionEnd|0});
+  const run = attrs =>{
+    const r = range();
+    if(r.e <= r.s){ msg.textContent = '本文欄で文字を選んでください'; return; }
+    pushHistory();
+    applyRunFormat(one, r.s, r.e, attrs);
+    msg.textContent = `${r.e-r.s}文字に適用`;
+    render();
+    // 再描画でパネルが作り直されるため、選択範囲を戻して続けて操作できるようにする
+    const t2 = $('pText');
+    if(t2){ t2.focus(); t2.setSelectionRange(r.s, r.e); const m2=$('pPartMsg'); if(m2) m2.textContent = msg.textContent; }
+  };
+  apply.onclick = ()=>{
+    const f = $('pPartFont').value, z = $('pPartSize').value, w = $('pPartWeight').value;
+    run({
+      font: f || null,
+      size: z==='' ? null : clamp(+z, 4, 800),
+      weight: w==='' ? null : clamp(Math.round(+w/100)*100, 100, 900),
+      fill: $('pPartFillOn').checked ? $('pPartFill').value : null,
+    });
+  };
+  clear.onclick = ()=> run({font:null, size:null, weight:null, fill:null});
 }
 /* 選択中の書体が端末に無いときの警告と、候補フォントの診断表示 */
 function fontWarnHTML(){
@@ -2491,6 +2681,7 @@ function renderProps(){
     if(rep.type==='text'){
       html += `<div class="pgroup">` +
         (one ? propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) : '') +
+        (one ? partFormatHTML(one) : '') +
         numIn('pSize','サイズ',rep.size,1,4,800,'px') +
         propRow(`<label>書体</label>${fontSelectHTML('pFont', rep)}` +
           ``) +
@@ -2575,10 +2766,11 @@ function renderProps(){
       eachFit(sh=> sh.fitText = v); render(); };
     bindColorCMYK('pFrameColor','textFill');
     const pt = $('pText');
-    if(pt && one) pt.onchange = ()=>{ startEdit(); one.text = pt.value; render(); };
+    if(pt && one) pt.onchange = ()=>{ startEdit(); one.text = pt.value; normalizeRuns(one); render(); };
     bindFontSelect('pFont', rep);
 
     bindAutoGrow('pText'); bindAutoGrow('pFrameText');
+    if(one) bindPartFormat(one);
     initFontPreview(rep);
     updateFontMissingWarn(rep);
     bindFontCheck(rep);
