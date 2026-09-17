@@ -213,6 +213,9 @@ button,select,.tbtn{touch-action:manipulation;}
           <option value="8">×8 (768dpi)</option>
           <option value="native">配置画像の原寸に合わせる</option>
         </select></label>
+      <label style="display:flex; align-items:center; gap:4px; font-size:11px; color:var(--muted); white-space:nowrap;"
+             title="文字を図形（パス）に変換して書き出します。書き出し先に書体が無くても字面が変わりません。変換後の文字は文字として選択・検索できなくなります">
+        <input type="checkbox" id="chkOutline">テキストをアウトライン化</label>
       <span id="expSizeHint" style="font-size:10px; color:var(--muted); padding:0 2px;"></span>
     </div>
   </div>
@@ -3261,6 +3264,197 @@ function download(name, blob){
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
 }
+/* ================= テキストのアウトライン化 =================
+   書き出し先に作成時の書体が無いと、文字は別の書体に置き換わって字面が変わる。
+   画面に組み上がっている文字を1字ずつ同じ書体・同じ位置で高精細に描き起こし、
+   その輪郭を拾ってパスに変換すれば、書体に依存しない図形として書き出せる。
+   （文字としての選択・検索はできなくなるので、書き出し時に選べるようにしている） */
+const OUTLINE_TARGET_PX = 180;      // 1文字をこのくらいの大きさに描いてから輪郭を拾う
+const OUTLINE_MAX_SIDE = 8192, OUTLINE_MAX_AREA = 40000000;
+/* 輪郭を間引く許容誤差。字の大きさに対する割合で決める（大きい字ほど点は粗くてよい） */
+const outlineTol = size => clamp(size*0.003, 0.025, 0.4);
+/* 塗りの濃さの配列から、境目（50%）の輪郭を取り出す。
+   升目の角の値から交点を線形に求めるので、描いた画の解像度以上の精度で輪郭が出る */
+function traceContours(alpha, W, H){
+  const T = 0.5;
+  const at = (x,y)=> alpha[y*W + x];
+  const segs = [], byKey = new Map();
+  const cross = (v0, v1)=> (T - v0) / (v1 - v0);
+  const push = (ka, pa, kb, pb)=>{
+    const i = segs.length;
+    segs.push({a:ka, b:kb, pa, pb});
+    (byKey.get(ka) || byKey.set(ka, []).get(ka)).push(i);
+    (byKey.get(kb) || byKey.set(kb, []).get(kb)).push(i);
+  };
+  for(let y=0; y<H-1; y++) for(let x=0; x<W-1; x++){
+    const v00 = at(x,y), v10 = at(x+1,y), v11 = at(x+1,y+1), v01 = at(x,y+1);
+    const code = (v00>=T?1:0) | (v10>=T?2:0) | (v11>=T?4:0) | (v01>=T?8:0);
+    if(code===0 || code===15) continue;
+    const top   = ()=> ['h'+x+','+y,       [x + cross(v00,v10), y]];
+    const bot   = ()=> ['h'+x+','+(y+1),   [x + cross(v01,v11), y+1]];
+    const left  = ()=> ['v'+x+','+y,       [x, y + cross(v00,v01)]];
+    const right = ()=> ['v'+(x+1)+','+y,   [x+1, y + cross(v10,v11)]];
+    const link = (e0, e1)=>{ const a=e0(), b=e1(); push(a[0], a[1], b[0], b[1]); };
+    switch(code){
+      case 1: case 14: link(left, top); break;
+      case 2: case 13: link(top, right); break;
+      case 3: case 12: link(left, right); break;
+      case 4: case 11: link(right, bot); break;
+      case 6: case 9:  link(top, bot); break;
+      case 7: case 8:  link(left, bot); break;
+      // 対角に分かれる升目は、4隅の平均でどちらに繋ぐかを決める
+      case 5: case 10: {
+        const mid = (v00+v10+v11+v01)/4 >= T;
+        if((code===5) === mid){ link(left, top); link(right, bot); }
+        else { link(left, bot); link(top, right); }
+        break;
+      }
+    }
+  }
+  // 端点を共有する線分をたどって閉じた輪郭にまとめる
+  const used = new Array(segs.length).fill(false), loops = [];
+  for(let i=0;i<segs.length;i++){
+    if(used[i]) continue;
+    const pts = [];
+    let si = i, from = segs[i].a;
+    while(si != null && !used[si]){
+      used[si] = true;
+      const s = segs[si], fwd = (s.a === from);
+      if(!pts.length) pts.push(fwd ? s.pa : s.pb);
+      pts.push(fwd ? s.pb : s.pa);
+      from = fwd ? s.b : s.a;
+      si = (byKey.get(from) || []).find(k => k !== si && !used[k]);
+    }
+    if(pts.length > 3) loops.push(pts);
+  }
+  return loops;
+}
+/* 輪郭の点を間引く（Ramer–Douglas–Peucker） */
+function simplifyLoop(pts, tol){
+  const keep = new Array(pts.length).fill(false);
+  keep[0] = keep[pts.length-1] = true;
+  const stack = [[0, pts.length-1]];
+  while(stack.length){
+    const [a, b] = stack.pop();
+    if(b - a < 2) continue;
+    const [ax, ay] = pts[a], [bx, by] = pts[b];
+    const dx = bx-ax, dy = by-ay, len = Math.hypot(dx, dy);
+    let far = -1, fd = tol;
+    for(let i=a+1;i<b;i++){
+      const [px, py] = pts[i];
+      const d = len < 1e-9 ? Math.hypot(px-ax, py-ay)
+                           : Math.abs(dy*(px-ax) - dx*(py-ay)) / len;
+      if(d > fd){ fd = d; far = i; }
+    }
+    if(far > 0){ keep[far] = true; stack.push([a, far], [far, b]); }
+  }
+  return pts.filter((p,i)=> keep[i]);
+}
+/* 組み上がった<text>を、実際に描かれている字形のパス群に置き換える。
+   色ごとに1本のパスにまとめ、穴は evenodd で抜く */
+function textToOutline(textEl){
+  const NS = 'http://www.w3.org/2000/svg';
+  let holder = $('outlineHolder');
+  if(!holder){
+    holder = document.createElementNS(NS,'svg');
+    holder.id = 'outlineHolder';
+    holder.setAttribute('width','1'); holder.setAttribute('height','1');
+    holder.style.cssText = 'position:absolute; left:-10000px; top:0; overflow:visible;';
+    document.body.appendChild(holder);
+  }
+  holder.appendChild(textEl);
+  // 実際に組まれた位置と書式を1文字ずつ読む（画面に出ているものとそのまま同じ）
+  const glyphs = [];
+  let box = null, failed = false;
+  try{
+    [...textEl.children].forEach(tp=>{
+      const cs = getComputedStyle(tp);
+      const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const str = tp.textContent;
+      for(let i=0;i<str.length;i++){
+        if(!/\S/.test(str[i])) continue;                 // 空白は字形が無い
+        const p = tp.getStartPositionOfChar(i);
+        glyphs.push({c:str[i], x:p.x, y:p.y, font, size:parseFloat(cs.fontSize)||16,
+                     fill:cs.fill, stroke:cs.stroke, sw:parseFloat(cs.strokeWidth)||0});
+      }
+    });
+    box = textEl.getBBox();
+  }catch(err){ failed = true; }
+  if(textEl.parentNode === holder) holder.removeChild(textEl);
+  if(failed) return null;                                       // 計測できなければ文字のまま残す
+  // 空白だけなど字形が無いものは、描くものが無いので空のまとまりに置き換える
+  if(!glyphs.length || !box || !(box.width > 0)) return document.createElementNS(NS,'g');
+
+  const size = Math.max(1, ...glyphs.map(g=> g.size));
+  const pad = Math.max(2, size*0.25);
+  const bw = box.width + pad*2, bh = box.height + pad*2;
+  let sc = clamp(Math.ceil(OUTLINE_TARGET_PX / size), 2, 10);
+  sc = Math.min(sc, OUTLINE_MAX_SIDE/bw, OUTLINE_MAX_SIDE/bh, Math.sqrt(OUTLINE_MAX_AREA/(bw*bh)));
+  if(!(sc >= 1)) return null;
+  const W = Math.ceil(bw*sc), H = Math.ceil(bh*sc);
+  const ox = box.x - pad, oy = box.y - pad;
+
+  /* 塗りの色ごと、さらに線がある場合は線の色ごとに層を作る。
+     SVGは塗り→線の順に描くので、その順で並べる */
+  const layers = [];
+  const addLayer = (paint, kind)=>{
+    if(!paint || paint==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(paint)) return;
+    if(!layers.some(l=> l.paint===paint && l.kind===kind)) layers.push({paint, kind});
+  };
+  glyphs.forEach(g=> addLayer(g.fill, 'fill'));
+  glyphs.forEach(g=>{ if(g.sw > 0) addLayer(g.stroke, 'stroke'); });
+
+  const out = [];
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = H;
+  const ctx = cv.getContext('2d', {willReadFrequently:true});
+  for(const layer of layers){
+    ctx.clearRect(0,0,W,H);
+    ctx.save();
+    ctx.scale(sc, sc); ctx.translate(-ox, -oy);
+    ctx.fillStyle = '#000'; ctx.strokeStyle = '#000';
+    ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    glyphs.forEach(g=>{
+      if(layer.kind==='fill' ? g.fill!==layer.paint : (g.stroke!==layer.paint || !(g.sw>0))) return;
+      ctx.font = g.font;
+      if(layer.kind==='fill') ctx.fillText(g.c, g.x, g.y);
+      else { ctx.lineWidth = g.sw; ctx.strokeText(g.c, g.x, g.y); }
+    });
+    ctx.restore();
+    const px = ctx.getImageData(0,0,W,H).data;
+    const alpha = new Float32Array(W*H);
+    for(let i=0, j=3; i<alpha.length; i++, j+=4) alpha[i] = px[j]/255;
+    const tol = outlineTol(size) * sc;
+    const d = traceContours(alpha, W, H).map(loop=>
+      simplifyLoop(loop, tol).map(([x,y],i)=>
+        (i ? 'L' : 'M') + fmtT(ox + x/sc) + ' ' + fmtT(oy + y/sc)).join(' ') + ' Z').join(' ');
+    if(d) out.push({d, paint:layer.paint});
+  }
+  if(!out.length) return null;
+  const g = document.createElementNS(NS,'g');
+  const clip = textEl.getAttribute('clip-path');
+  if(clip) g.setAttribute('clip-path', clip);
+  out.forEach(o=>{
+    const p = document.createElementNS(NS,'path');
+    p.setAttribute('d', o.d);
+    p.setAttribute('fill', o.paint);
+    p.setAttribute('fill-rule','evenodd');   // 字の中の穴を抜く
+    g.appendChild(p);
+  });
+  return g;
+}
+/* 図形の要素の中の<text>をすべてアウトライン化する。
+   テキスト図形そのものが<text>のときは、置き換えた<g>を返す */
+function outlineShapeEl(el){
+  if(el.tagName === 'text') return textToOutline(el) || el;
+  [...el.querySelectorAll('text')].forEach(t=>{
+    const parent = t.parentNode, next = t.nextSibling;
+    const g = textToOutline(t);               // 計測のため t は一度ここから外れる
+    parent.insertBefore(g || t, next);
+  });
+  return el;
+}
+function outlineOn(){ const c = $('chkOutline'); return !!(c && c.checked); }
 /* view を渡すと、その画素数の画布にちょうど収まるSVGを返す（ラスタライズ用）。
    書類の寸法をmmで決めると幅・高さに端数が出る。端数のまま読み込ませると
    いったん整数へ丸められてから画布に合わせ直され、配置画像がぼやける。
@@ -3277,7 +3471,13 @@ function buildSVGString(view){
   if(defs.length) out += '<defs>'+defs.join('')+'</defs>';
   if(d.bg && d.bg!=='none') out += `<rect width="${vw}" height="${vh}" fill="${d.bg}"/>`;
   const ser = new XMLSerializer();
-  state.shapes.forEach(s=>{ if(shapeVisible(s)) out += ser.serializeToString(shapeEl(s,false)); });
+  const toOutline = outlineOn();
+  state.shapes.forEach(s=>{
+    if(!shapeVisible(s)) return;
+    let el = shapeEl(s, false);
+    if(toOutline) el = outlineShapeEl(el);
+    out += ser.serializeToString(el);
+  });
   out += '</svg>';
   return out;
 }
@@ -3338,7 +3538,17 @@ async function fontEmbedCSS(){
   return css;
 }
 async function buildSVGStringWithFonts(view){
+  /* アウトライン化は文字数に比例して時間がかかる（1000字でおよそ数秒）。
+     画面が固まったように見えないよう、先に知らせて1回描き直させてから始める */
+  const heavy = outlineOn() && state.shapes.some(s=> s.text && (s.type==='text' || isFrameShape(s)));
+  const hint = $('hint');
+  if(heavy){
+    if(hint) hint.textContent = '文字をアウトライン化しています…';
+    await new Promise(r=> requestAnimationFrame(()=> setTimeout(r, 0)));
+  }
   const svg = buildSVGString(view);
+  if(heavy && hint) hint.textContent = '';
+  if(outlineOn()) return svg;      // 字形をパスにしてあるので書体の埋め込みは要らない
   const css = await fontEmbedCSS();
   if(embedMissing.length){
     // 黙って別の書体に置き換わると、字面も字送りも変わってしまうので必ず知らせる
