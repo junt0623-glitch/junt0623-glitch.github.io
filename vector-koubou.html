@@ -330,6 +330,9 @@ const snapX = v => snapAxis(v, state.guides.v);
 const snapY = v => snapAxis(v, state.guides.h);
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmt = v => Math.round(v*10)/10;
+/* 文字の位置は1文字ずつ書き出すため、丸め誤差がそのまま字面のズレになる。
+   図形より1桁細かく持つ（1/100px＝印刷300dpiで約0.001mm） */
+const fmtT = v => Math.round(v*100)/100;
 
 /* ---- 色変換（RGB / CMYK） ---- */
 function hexToRgb(hex){
@@ -725,9 +728,12 @@ function layoutText(s){
   const mkLine = (segs, last)=>{
     const text = segs.map(g=>g.t).join('');
     let ls = baseLS;
-    // 行末揃え: 枠幅との差を文字間に均等配分（最大0.25em、不自然な広がりを防ぐ）
+    /* 行末揃え: 枠幅との差を文字と文字の間に均等配分（最大0.25em、不自然な広がりを防ぐ）。
+       行末の外側には空きを作らないので、行の字面がちょうど枠幅に収まる */
     if(s.boxW && textAlign(s)==='justify' && !last && text.length>1){
-      ls = baseLS + clamp((s.boxW - wSegs(segs))/text.length, 0, s.size*0.25);
+      const w = wSegs(segs) - baseLS*text.length;          // 字幅の合計
+      const gaps = text.length - 1;
+      ls = baseLS + clamp((s.boxW - w - baseLS*gaps)/gaps, 0, s.size*0.25);
     }
     const ruby = []; let pos = 0;
     segs.forEach(g=>{ if(g.r) ruby.push({start:pos, len:g.t.length, r:g.r}); pos += g.t.length; });
@@ -845,22 +851,17 @@ function buildTextLines(t, spec, x, y0, lines){
     const cs = lineChars(ln);
     const ls = ln.ls || 0;
     const xs = charXs(cs, x0, ls);
-    const hasRuby = !!(ln.ruby && ln.ruby.length);
     const parts = pieces(cs);
-    parts.forEach((pc,pi)=>{
+    parts.forEach(pc=>{
       const tp = document.createElementNS(NS,'tspan');
-      if(hasRuby){
-        /* ルビのある行は1文字ずつ位置を明記する。表示環境ごとの字送りの差に左右されず、
-           書き出したデータでもルビが必ず同じ文字の真上に乗る */
-        tp.setAttribute('x', xs.slice(pc.at, pc.at + pc.t.length).map(fmt).join(' '));
-        tp.setAttribute('y', fmt(y));
-      }else{
-        if(pi===0){ tp.setAttribute('x',fmt(x0)); tp.setAttribute('y',fmt(y)); }
-        if(ls) tp.setAttribute('letter-spacing', ls);
-      }
+      /* 1文字ずつ位置を明記する。字送りを表示側に任せないので、書き出したデータを
+         別の環境で開いても——作った書体が無く代替書体になっても——文字の位置、
+         行の長さ、行の折れ位置、ルビの乗る位置が作成時とそのまま一致する */
+      tp.setAttribute('x', xs.slice(pc.at, pc.at + pc.t.length).map(fmtT).join(' '));
+      tp.setAttribute('y', fmtT(y));
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
-        tp.setAttribute('font-size', fmt(pc.a.size));
+        tp.setAttribute('font-size', fmtT(pc.a.size));
         tp.setAttribute('font-weight', String(pc.a.weight));
         if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
       }
@@ -884,9 +885,9 @@ function buildTextLines(t, spec, x, y0, lines){
         // 基底文字の実寸の中央に置く（末尾に付く字間ぶんは含めない）
         const a = Math.min(tg.from, cs.length), b = Math.min(tg.to, cs.length);
         const rt = document.createElementNS(NS,'tspan');
-        rt.setAttribute('x', fmt((xs[a] + xs[b] - ls)/2));
-        rt.setAttribute('y', fmt(rubyY));
-        rt.setAttribute('font-size', fmt(rubySize*0.5));
+        rt.setAttribute('x', fmtT((xs[a] + xs[b] - ls)/2));
+        rt.setAttribute('y', fmtT(rubyY));
+        rt.setAttribute('font-size', fmtT(rubySize*0.5));
         rt.setAttribute('text-anchor','middle');
         if(spec.rubyLS) rt.setAttribute('letter-spacing', spec.rubyLS);
         rt.textContent = tg.r;
@@ -3375,12 +3376,29 @@ function exportPNG(){
 function exportJPEG(){
   rasterize(exportScale(), true, c=> c.toBlob(b=> download(fnameBase()+'.jpg', b), 'image/jpeg', 0.95));
 }
-function exportPDF(){
-  rasterize(exportScale(), true, c=> c.toBlob(b=>{
-    b.arrayBuffer().then(buf=> buildPDF(new Uint8Array(buf), c.width, c.height, exportScale()));
-  }, 'image/jpeg', 0.95));
+/* PDFに埋め込む画像。可逆圧縮（Flate）が使える端末では生のRGBをそのまま入れるので、
+   細い線や文字のふちにJPEGのにじみが出ず、画面どおりの画が印刷される。
+   画素数が多すぎて生データを持てないときと、CompressionStreamが無い端末ではJPEGに戻す */
+const PDF_LOSSLESS_MAX_PX = 30000000;
+async function pdfImageData(c){
+  if(typeof CompressionStream === 'function' && c.width*c.height <= PDF_LOSSLESS_MAX_PX){
+    try{
+      const d = c.getContext('2d').getImageData(0,0,c.width,c.height).data;
+      const rgb = new Uint8Array(c.width*c.height*3);
+      for(let i=0, j=0; i<d.length; i+=4){ rgb[j++]=d[i]; rgb[j++]=d[i+1]; rgb[j++]=d[i+2]; }
+      const st = new Blob([rgb]).stream().pipeThrough(new CompressionStream('deflate'));
+      const buf = await new Response(st).arrayBuffer();
+      return {bytes:new Uint8Array(buf), filter:'/FlateDecode'};
+    }catch(err){ /* 容量不足などのときはJPEGで続行 */ }
+  }
+  const blob = await new Promise(res=> c.toBlob(res, 'image/jpeg', 0.95));
+  return {bytes:new Uint8Array(await blob.arrayBuffer()), filter:'/DCTDecode'};
 }
-function buildPDF(jpegBytes, wPx, hPx, scale){
+function exportPDF(){
+  const scale = exportScale();
+  rasterize(scale, true, c=> pdfImageData(c).then(im=> buildPDF(im, c.width, c.height, scale)));
+}
+function buildPDF(img, wPx, hPx, scale){
   const enc = new TextEncoder();
   const parts = [];
   let offset = 0;
@@ -3400,8 +3418,8 @@ function buildPDF(jpegBytes, wPx, hPx, scale){
   const wPt = fmt(wPx/s*72/96), hPt = fmt(hPx/s*72/96);
   beginObj(3); addPart(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`);
   beginObj(4);
-  addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${jpegBytes.length} >>\nstream\n`);
-  addPart(jpegBytes);
+  addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter ${img.filter} /Length ${img.bytes.length} >>\nstream\n`);
+  addPart(img.bytes);
   addPart('\nendstream\nendobj\n');
   const content = `q ${wPt} 0 0 ${hPt} 0 0 cm /Im0 Do Q`;
   beginObj(5); addPart(`<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
