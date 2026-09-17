@@ -776,6 +776,12 @@ function buildTextLines(t, spec, x, y0, lines){
   const baseLS = +spec.ls || 0;
   const rows = lines || layoutText(spec);
   const align = textAlign(spec);
+  /* 入力した空白をそのまま描く。これが無いと行頭・行末の空白が表示側で詰められ、
+     空白を数えている折返し計算や寄せ量とズレてしまう */
+  t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
+  const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
+                        : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+  const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
   // 行の実寸（均等割付で広げる前の幅）
   const lineW = ln => (ln.segs ? ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS : 0);
   const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
@@ -784,19 +790,42 @@ function buildTextLines(t, spec, x, y0, lines){
     if(align==='right')  return Math.max(0, refW - lineW(ln));
     return 0;            // left と justify は行頭から
   };
+  // 行を1文字ずつに展開する（ルビの位置決めと、文字ごとの位置指定に使う）
+  const lineChars = ln=>{
+    const segs = ln.segs || [{t:ln.text, idx:0}];
+    const cs = [];
+    segs.forEach(g=>{ for(let k=0;k<g.t.length;k++) cs.push({c:g.t.charAt(k), i:g.idx+k}); });
+    return cs;
+  };
+  /* 行頭から数えた各文字の開始x（最後に行末のxが入る）。
+     同じ書式が続く区間は文字列としてまとめて測るので、欧文の字詰め（カーニング）を
+     保ったまま1文字ごとの位置が求まる。1文字ずつ測って足すと字詰めのぶんだけ
+     実際の描画位置から離れていき、ルビが右へズレる */
+  const charXs = (cs, x0, ls)=>{
+    const xs = new Array(cs.length+1);
+    let cx = x0, i = 0;
+    while(i < cs.length){
+      let j = i+1;
+      while(j < cs.length && keyOf(cs[j].i) === keyOf(cs[i].i)) j++;
+      measureCtx.font = fontOf(attrs ? attrs[cs[i].i] : null);
+      const run = cs.slice(i,j).map(z=>z.c).join('');
+      for(let k=i;k<j;k++) xs[k] = cx + measureCtx.measureText(run.slice(0,k-i)).width + ls*(k-i);
+      cx += measureCtx.measureText(run).width + ls*run.length;
+      i = j;
+    }
+    xs[cs.length] = cx;
+    return xs;
+  };
   /* 行を「同じ書式が続く区間」に割る。区間ごとにtspanを出し、
      2つ目以降はx指定なしで前の続きから流す */
-  const pieces = ln=>{
-    const segs = ln.segs || [{t:ln.text, idx:0}];
-    if(!attrs) return [{t:segs.map(g=>g.t).join(''), a:null}];
+  const pieces = cs=>{
+    if(!attrs) return [{t: cs.map(z=>z.c).join(''), a:null, at:0}];
     const out = [];
-    segs.forEach(g=>{
-      for(let k=0;k<g.t.length;k++){
-        const a = attrs[g.idx+k] || null;
-        const prev = out[out.length-1];
-        if(prev && a && prev.a && attrKey(prev.a)===attrKey(a)) prev.t += g.t.charAt(k);
-        else out.push({t:g.t.charAt(k), a});
-      }
+    cs.forEach((z,k)=>{
+      const a = attrs[z.i] || null;
+      const prev = out[out.length-1];
+      if(prev && a && prev.a && attrKey(prev.a)===attrKey(a)) prev.t += z.c;
+      else out.push({t:z.c, a, at:k});
     });
     return out;
   };
@@ -813,11 +842,22 @@ function buildTextLines(t, spec, x, y0, lines){
     // 行送りは前後の行のうち大きいほうに合わせる（部分的に大きくした行が重ならないように）
     if(i>0) y += Math.max(lh, Math.max(rowSize(rows[i-1]), rowSize(ln))*(spec.lineH || 1.25));
     const x0 = x + offsetOf(ln);
-    const parts = pieces(ln);
+    const cs = lineChars(ln);
+    const ls = ln.ls || 0;
+    const xs = charXs(cs, x0, ls);
+    const hasRuby = !!(ln.ruby && ln.ruby.length);
+    const parts = pieces(cs);
     parts.forEach((pc,pi)=>{
       const tp = document.createElementNS(NS,'tspan');
-      if(pi===0){ tp.setAttribute('x',fmt(x0)); tp.setAttribute('y',fmt(y)); }
-      if(ln.ls) tp.setAttribute('letter-spacing', ln.ls);
+      if(hasRuby){
+        /* ルビのある行は1文字ずつ位置を明記する。表示環境ごとの字送りの差に左右されず、
+           書き出したデータでもルビが必ず同じ文字の真上に乗る */
+        tp.setAttribute('x', xs.slice(pc.at, pc.at + pc.t.length).map(fmt).join(' '));
+        tp.setAttribute('y', fmt(y));
+      }else{
+        if(pi===0){ tp.setAttribute('x',fmt(x0)); tp.setAttribute('y',fmt(y)); }
+        if(ls) tp.setAttribute('letter-spacing', ls);
+      }
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmt(pc.a.size));
@@ -828,23 +868,8 @@ function buildTextLines(t, spec, x, y0, lines){
       t.appendChild(tp);
     });
     (ln.ruby||[]).forEach(rb=>{
-      const segs = ln.segs || [{t:ln.text, idx:0}];
-      // 行頭から rb.start 文字目までの幅、およびルビの付く範囲の幅
-      const chars = [];
-      segs.forEach(g=>{ for(let k=0;k<g.t.length;k++) chars.push({c:g.t.charAt(k), i:g.idx+k}); });
-      const wOf = (from, to)=>{
-        let sum = 0;
-        for(let k=from;k<to && k<chars.length;k++){
-          const a = attrs ? attrs[chars[k].i] : null;
-          measureCtx.font = a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
-                              : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
-          sum += measureCtx.measureText(chars[k].c).width + ln.ls;
-        }
-        return sum;
-      };
-      const preW = wOf(0, rb.start);
-      const rubySize = (attrs && attrs[chars[rb.start] ? chars[rb.start].i : 0]
-                        ? attrs[chars[rb.start].i].size : size);
+      const rubySize = (attrs && cs[rb.start] && attrs[cs[rb.start].i])
+                        ? attrs[cs[rb.start].i].size : size;
       const rubyY = y - rubySize*0.85 - (+spec.rubyDy||0);
       // ルビ内のスペース（半角・全角）区切りで基底1文字ずつに割り当てる（モノルビ）
       const groups = rb.r.split(/[ 　]+/).filter(g=>g);
@@ -856,8 +881,10 @@ function buildTextLines(t, spec, x, y0, lines){
         if(groups.length > rb.len && targets.length) targets[targets.length-1].r += groups.slice(rb.len).join('');
       }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
       targets.forEach(tg=>{
+        // 基底文字の実寸の中央に置く（末尾に付く字間ぶんは含めない）
+        const a = Math.min(tg.from, cs.length), b = Math.min(tg.to, cs.length);
         const rt = document.createElementNS(NS,'tspan');
-        rt.setAttribute('x', fmt(x0 + preW + wOf(rb.start, tg.from) + wOf(tg.from, tg.to)/2));
+        rt.setAttribute('x', fmt((xs[a] + xs[b] - ls)/2));
         rt.setAttribute('y', fmt(rubyY));
         rt.setAttribute('font-size', fmt(rubySize*0.5));
         rt.setAttribute('text-anchor','middle');
@@ -3217,16 +3244,21 @@ function buildSVGString(){
    スタックの後続候補で表示される（キャプション工房と同じ扱い） */
 function usedWebFonts(){
   const map = new Map();
-  state.shapes.forEach(s=>{
-    if(!shapeVisible(s) || !(s.type==='text' || isFrameShape(s)) || !s.text || !s.font) return;
-    const f = FONTS[s.font];
+  const add = (key, weight, text)=>{
+    const f = FONTS[key];
     // レジストリ書体はオンライン書体（gf持ち）だけが埋め込み対象
-    const fam = f ? (f.gf ? (f.family || s.font) : null) : s.font;
+    const fam = f ? (f.gf ? (f.family || key) : null) : key;
     if(!fam || GENERIC_FAMS.includes(String(fam).toLowerCase())) return;
     const cur = map.get(fam) || {text:'', weights:new Set()};
-    cur.text += s.text;
-    cur.weights.add(textWeight(s));   // 使っている太さだけを埋め込む
+    cur.text += text;
+    cur.weights.add(weight);          // 使っている太さだけを埋め込む
     map.set(fam, cur);
+  };
+  state.shapes.forEach(s=>{
+    if(!shapeVisible(s) || !(s.type==='text' || isFrameShape(s)) || !s.text || !s.font) return;
+    // 文字ごとに別の書体・太さを指定している場合も取りこぼさない
+    const attrs = charAttrs(s), str = String(s.text);
+    for(let i=0;i<attrs.length;i++) add(attrs[i].font, attrs[i].weight, str.charAt(i));
   });
   return map;
 }
