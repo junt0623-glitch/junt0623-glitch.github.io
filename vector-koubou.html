@@ -724,20 +724,29 @@ function layoutText(s){
   const mz = makeMeasurer(s);
   const baseLS = +s.ls || 0;   // 文字間（ユーザー指定、px）
   const wSegs = segs => segs.reduce((a,g)=> a + mz.seg(g), 0);
+  /* 行末に送った空白は字面には数えない。数えると寄せや均等割付が空白のぶんだけずれる */
+  const inkSegs = segs=>{
+    let n = segs.length;
+    while(n>0 && !segs[n-1].r && /^\s+$/.test(segs[n-1].t)) n--;
+    return segs.slice(0, n);
+  };
+  const inkW = segs => wSegs(inkSegs(segs));
   const out = [];
   const mkLine = (segs, last)=>{
     const text = segs.map(g=>g.t).join('');
+    const ink = inkSegs(segs), inkText = ink.map(g=>g.t).join('');
     let ls = baseLS;
     /* 行末揃え: 枠幅との差を文字と文字の間に均等配分（最大0.25em、不自然な広がりを防ぐ）。
        行末の外側には空きを作らないので、行の字面がちょうど枠幅に収まる */
-    if(s.boxW && textAlign(s)==='justify' && !last && text.length>1){
-      const w = wSegs(segs) - baseLS*text.length;          // 字幅の合計
-      const gaps = text.length - 1;
+    if(s.boxW && textAlign(s)==='justify' && !last && inkText.length>1){
+      const w = wSegs(ink) - baseLS*inkText.length;         // 字幅の合計
+      const gaps = inkText.length - 1;
       ls = baseLS + clamp((s.boxW - w - baseLS*gaps)/gaps, 0, s.size*0.25);
     }
     const ruby = []; let pos = 0;
     segs.forEach(g=>{ if(g.r) ruby.push({start:pos, len:g.t.length, r:g.r}); pos += g.t.length; });
-    return {text, ls: Math.round(ls*100)/100, ruby, segs};
+    return {text, ls: Math.round(ls*100)/100, ruby, segs,
+            w: Math.max(0, wSegs(ink) - baseLS)};        // 字面の幅（行末の空白を除く）
   };
   let base = 0;
   String(s.text).split('\n').forEach(para=>{
@@ -750,25 +759,36 @@ function layoutText(s){
       segmentWords(tk.t).forEach(u=>{ toks.push({t:u, idx:tk.idx+off}); off += u.length; });
     });
     if(!s.boxW || !para){ out.push(mkLine(toks, true)); return; }
+    const before = out.length;
     let cur = [];
+    /* 折り返した先の行頭には空白を置かない。ただし捨てずに前の行の末尾へ送る。
+       捨てると書き出したデータから文字が消え、行頭に残すと字下げして見える */
+    const wrapAt = tk=>{
+      const lead = tk.r ? '' : (tk.t.match(/^\s+/) || [''])[0];
+      if(lead) cur.push({t:lead, idx:tk.idx});
+      out.push(mkLine(cur, false));
+      const rest = tk.t.slice(lead.length);
+      cur = rest ? [{t:rest, idx:tk.idx + lead.length, r:tk.r}] : [];
+    };
     toks.forEach(tk=>{
-      if(cur.length && wSegs(cur.concat([tk])) > s.boxW){
-        out.push(mkLine(cur, false));
-        const trimmed = tk.r ? tk : {t: tk.t.replace(/^\s+/,''), idx: tk.idx + (tk.t.length - tk.t.replace(/^\s+/,'').length)};
-        cur = [trimmed];
-      }else cur.push(tk);
+      if(cur.length && inkW(cur.concat([tk])) > s.boxW) wrapAt(tk);
+      else cur.push(tk);
       // 1単語が枠より長い場合のみ、やむを得ず文字単位で分割（ルビ付きは分割しない）
       while(cur.length===1 && !cur[0].r && cur[0].t.length>1 && mz.seg(cur[0]) > s.boxW){
         const g = cur[0], u = g.t;
         let k = u.length-1;
         while(k>1 && mz.seg({t:u.slice(0,k), idx:g.idx}) > s.boxW) k--;
         k = kinsokuBreak(u, k);
-        out.push(mkLine([{t:u.slice(0,k), idx:g.idx}], false));
-        const restRaw = u.slice(k), rest = restRaw.replace(/^\s+/,'');
-        cur = [{t: rest, idx: g.idx + k + (restRaw.length - rest.length)}];
+        const restRaw = u.slice(k);
+        const lead = (restRaw.match(/^\s+/) || [''])[0];
+        out.push(mkLine([{t:u.slice(0,k)+lead, idx:g.idx}], false));
+        const rest = restRaw.slice(lead.length);
+        cur = rest ? [{t:rest, idx:g.idx + k + lead.length}] : [];
+        if(!cur.length) break;
       }
     });
-    out.push(mkLine(cur, true));
+    // ちょうど行末で終わったときに空の行を足さない（そのぶん本文が高くなってしまう）
+    if(cur.length || out.length === before) out.push(mkLine(cur, true));
   });
   return out;
 }
@@ -788,8 +808,9 @@ function buildTextLines(t, spec, x, y0, lines){
   const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
                         : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
   const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
-  // 行の実寸（均等割付で広げる前の幅）
-  const lineW = ln => (ln.segs ? ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS : 0);
+  // 行の字面の幅（均等割付で広げる前、行末に送った空白は含まない）
+  const lineW = ln => (ln.w != null ? ln.w
+                      : ln.segs ? Math.max(0, ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS) : 0);
   const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
   const offsetOf = ln=>{
     if(align==='center') return Math.max(0, (refW - lineW(ln))/2);
@@ -853,6 +874,8 @@ function buildTextLines(t, spec, x, y0, lines){
     const xs = charXs(cs, x0, ls);
     const parts = pieces(cs);
     parts.forEach(pc=>{
+      // 空の行にはtspanを出さない（穴埋めの空白を入れると本文に無い文字が混ざる）
+      if(!pc.t) return;
       const tp = document.createElementNS(NS,'tspan');
       /* 1文字ずつ位置を明記する。字送りを表示側に任せないので、書き出したデータを
          別の環境で開いても——作った書体が無く代替書体になっても——文字の位置、
@@ -865,7 +888,7 @@ function buildTextLines(t, spec, x, y0, lines){
         tp.setAttribute('font-weight', String(pc.a.weight));
         if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
       }
-      tp.textContent = pc.t || (parts.length===1 ? ' ' : '');
+      tp.textContent = pc.t;
       t.appendChild(tp);
     });
     (ln.ruby||[]).forEach(rb=>{
@@ -3226,12 +3249,19 @@ function download(name, blob){
   a.click();
   setTimeout(()=>URL.revokeObjectURL(a.href), 5000);
 }
-function buildSVGString(){
+/* view を渡すと、その画素数の画布にちょうど収まるSVGを返す（ラスタライズ用）。
+   書類の寸法をmmで決めると幅・高さに端数が出る。端数のまま読み込ませると
+   いったん整数へ丸められてから画布に合わせ直され、配置画像がぼやける。
+   表示領域を画布の整数画素ぴったりに広げておけば、1書類px＝倍率ぶんの画素に正確に対応する。
+   省略時は書類の寸法そのもの（.svg 保存用） */
+function buildSVGString(view){
   const d = state.doc;
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${d.w}" height="${d.h}" viewBox="0 0 ${d.w} ${d.h}">`;
+  const vw = view ? view.w  : d.w, vh = view ? view.h  : d.h;   // 表示領域
+  const pw = view ? view.px : d.w, ph = view ? view.py : d.h;   // 出力画素数
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${pw}" height="${ph}" viewBox="0 0 ${vw} ${vh}">`;
   const defs = dynamicDefStrings();
   if(defs.length) out += '<defs>'+defs.join('')+'</defs>';
-  if(d.bg && d.bg!=='none') out += `<rect width="${d.w}" height="${d.h}" fill="${d.bg}"/>`;
+  if(d.bg && d.bg!=='none') out += `<rect width="${vw}" height="${vh}" fill="${d.bg}"/>`;
   const ser = new XMLSerializer();
   state.shapes.forEach(s=>{ if(shapeVisible(s)) out += ser.serializeToString(shapeEl(s,false)); });
   out += '</svg>';
@@ -3287,8 +3317,8 @@ async function fontEmbedCSS(){
   }
   return css;
 }
-async function buildSVGStringWithFonts(){
-  const svg = buildSVGString();
+async function buildSVGStringWithFonts(view){
+  const svg = buildSVGString(view);
   const css = await fontEmbedCSS();
   return css ? svg.replace(/^(<svg[^>]*>)/, (m,p1)=> p1 + '<style>' + css + '</style>') : svg;
 }
@@ -3341,7 +3371,7 @@ function updateExportHint(){
   const sel = $('expScale');
   const want = requestedScale(sel ? sel.value : '2');
   const {scale, capped} = clampExportScale(want);
-  const w = Math.round(state.doc.w*scale), h = Math.round(state.doc.h*scale);
+  const {px:w, py:h} = exportPixels(scale);
   let txt = `${w} × ${h} px / ${Math.round(96*scale)}dpi`;
   if(sel && sel.value==='native') txt += `（画像原寸 ×${want}）`;
   if(capped) txt += `（上限により×${scale}に縮小）`;
@@ -3350,20 +3380,28 @@ function updateExportHint(){
   if(need > scale + 0.005) txt += ` ⚠ 配置画像が縮小されます（原寸には×${need}必要）`;
   el.textContent = txt;
 }
-function rasterize(scale, forceOpaque, cb){
-  buildSVGStringWithFonts().then(svg=> rasterizeSVG(svg, scale, forceOpaque, cb));
+/* 書き出し画素数。書類の寸法に端数があっても中身は倍率どおりに描きたいので、
+   画布は切り上げ、はみ出した端数は書類の背景で埋める */
+function exportPixels(scale){
+  return {px: Math.max(1, Math.ceil(state.doc.w*scale - 1e-6)),
+          py: Math.max(1, Math.ceil(state.doc.h*scale - 1e-6))};
 }
-function rasterizeSVG(svg, scale, forceOpaque, cb){
+function rasterize(scale, forceOpaque, cb){
+  const {px, py} = exportPixels(scale);
+  const view = {w: px/scale, h: py/scale, px, py};
+  buildSVGStringWithFonts(view).then(svg=> rasterizeSVG(svg, px, py, forceOpaque, cb));
+}
+function rasterizeSVG(svg, px, py, forceOpaque, cb){
   const url = URL.createObjectURL(new Blob([svg], {type:'image/svg+xml'}));
   const img = new Image();
   img.onload = ()=>{
     const c = document.createElement('canvas');
-    c.width = Math.round(state.doc.w*scale); c.height = Math.round(state.doc.h*scale);
+    c.width = px; c.height = py;
     const ctx = c.getContext('2d');
     ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
     if(forceOpaque){ ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,c.width,c.height); }
-    // 幅・高さを明示してdrawImageさせる（倍率指定より端数に強い）
-    ctx.drawImage(img, 0, 0, c.width, c.height);
+    // SVG側の表示領域を画布に合わせてあるので、そのまま等倍で写せば拡大縮小は起きない
+    ctx.drawImage(img, 0, 0, px, py);
     URL.revokeObjectURL(url);
     cb(c);
   };
@@ -3413,15 +3451,18 @@ function buildPDF(img, wPx, hPx, scale){
   addPart('%PDF-1.4\n');
   beginObj(1); addPart('<< /Type /Catalog /Pages 2 0 R >>\nendobj\n');
   beginObj(2); addPart('<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n');
-  // 用紙サイズは倍率によらず一定に保ち、倍率は埋め込み画像の精細さ（実効dpi）として効かせる
+  /* 用紙サイズは書類の寸法そのもの（倍率によらず一定。倍率は埋め込み画像の精細さ＝実効dpiとして効く）。
+     画像は画布を切り上げたぶんだけ用紙より少し大きいので、上端を合わせて置き、
+     はみ出す端数は用紙の外へ落とす。こうすると中身の寸法が用紙に対して狂わない */
   const s = scale || 1;
-  const wPt = fmt(wPx/s*72/96), hPt = fmt(hPx/s*72/96);
+  const wPt = fmtT(state.doc.w*72/96), hPt = fmtT(state.doc.h*72/96);
+  const iw = fmtT(wPx/s*72/96), ih = fmtT(hPx/s*72/96);
   beginObj(3); addPart(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${wPt} ${hPt}] /Resources << /XObject << /Im0 4 0 R >> /ProcSet [/PDF /ImageC] >> /Contents 5 0 R >>\nendobj\n`);
   beginObj(4);
   addPart(`<< /Type /XObject /Subtype /Image /Width ${wPx} /Height ${hPx} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter ${img.filter} /Length ${img.bytes.length} >>\nstream\n`);
   addPart(img.bytes);
   addPart('\nendstream\nendobj\n');
-  const content = `q ${wPt} 0 0 ${hPt} 0 0 cm /Im0 Do Q`;
+  const content = `q ${iw} 0 0 ${ih} 0 ${fmtT(hPt - ih)} cm /Im0 Do Q`;
   beginObj(5); addPart(`<< /Length ${content.length} >>\nstream\n${content}\nendstream\nendobj\n`);
 
   const xrefStart = offset;
