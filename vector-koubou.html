@@ -843,15 +843,27 @@ function buildTextLines(t, spec, x, y0, lines){
     xs[cs.length] = cx;
     return xs;
   };
-  /* 行を「同じ書式が続く区間」に割る。区間ごとにtspanを出し、
-     2つ目以降はx指定なしで前の続きから流す */
-  const pieces = cs=>{
-    if(!attrs) return [{t: cs.map(z=>z.c).join(''), a:null, at:0}];
+  /* ルビの付く範囲（モノルビはスペース区切りで基底1字ずつ） */
+  const rubyTargets = rb=>{
+    const groups = rb.r.split(/[ 　]+/).filter(g=>g);
+    const targets = [];
+    if(groups.length > 1){
+      for(let k=0;k<rb.len;k++){
+        if(k < groups.length) targets.push({from:rb.start+k, to:rb.start+k+1, r:groups[k]});
+      }
+      if(groups.length > rb.len && targets.length) targets[targets.length-1].r += groups.slice(rb.len).join('');
+    }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
+    return targets;
+  };
+  /* 行を区間に割る。書式が変わるところと、ルビの付く範囲の境目で区切る。
+     区間ごとに開始位置と幅を明記するので、ルビは必ず基底文字の真上に残る */
+  const pieces = (cs, cuts)=>{
     const out = [];
     cs.forEach((z,k)=>{
-      const a = attrs[z.i] || null;
+      const a = attrs ? (attrs[z.i] || null) : null;
       const prev = out[out.length-1];
-      if(prev && a && prev.a && attrKey(prev.a)===attrKey(a)) prev.t += z.c;
+      const joins = prev && !cuts.has(k) && (attrs ? (a && prev.a && attrKey(prev.a)===attrKey(a)) : true);
+      if(joins) prev.t += z.c;
       else out.push({t:z.c, a, at:k});
     });
     return out;
@@ -872,16 +884,25 @@ function buildTextLines(t, spec, x, y0, lines){
     const cs = lineChars(ln);
     const ls = ln.ls || 0;
     const xs = charXs(cs, x0, ls);
-    const parts = pieces(cs);
+    const cuts = new Set();
+    (ln.ruby||[]).forEach(rb=> rubyTargets(rb).forEach(tg=>{ cuts.add(tg.from); cuts.add(tg.to); }));
+    const parts = pieces(cs, cuts);
     parts.forEach(pc=>{
       // 空の行にはtspanを出さない（穴埋めの空白を入れると本文に無い文字が混ざる）
       if(!pc.t) return;
       const tp = document.createElementNS(NS,'tspan');
-      /* 1文字ずつ位置を明記する。字送りを表示側に任せないので、書き出したデータを
-         別の環境で開いても——作った書体が無く代替書体になっても——文字の位置、
-         行の長さ、行の折れ位置、ルビの乗る位置が作成時とそのまま一致する */
-      tp.setAttribute('x', xs.slice(pc.at, pc.at + pc.t.length).map(fmtT).join(' '));
+      /* 区間の開始位置と幅を明記する。行の折れ位置・行頭・行の長さは作成時どおりに
+         固定されるが、字と字の間隔は表示側の書体に任せる。
+         1文字ずつ位置を固定すると、書き出し先で書体が入れ替わったとき
+         字間に隙間や重なりが出て、入れていない空白のように見えてしまう */
+      tp.setAttribute('x', fmtT(xs[pc.at]));
       tp.setAttribute('y', fmtT(y));
+      // 先頭の字の左端から最後の字の送り終わりまで（最後の字の後ろに付く字間は含まない）
+      const adv = xs[pc.at + pc.t.length] - xs[pc.at] - ls;
+      if(pc.t.length > 1 && adv > 0){
+        tp.setAttribute('textLength', fmtT(adv));
+        tp.setAttribute('lengthAdjust', 'spacing');   // 字形は変えず字間だけで幅を合わせる
+      }
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
@@ -895,16 +916,7 @@ function buildTextLines(t, spec, x, y0, lines){
       const rubySize = (attrs && cs[rb.start] && attrs[cs[rb.start].i])
                         ? attrs[cs[rb.start].i].size : size;
       const rubyY = y - rubySize*0.85 - (+spec.rubyDy||0);
-      // ルビ内のスペース（半角・全角）区切りで基底1文字ずつに割り当てる（モノルビ）
-      const groups = rb.r.split(/[ 　]+/).filter(g=>g);
-      const targets = [];
-      if(groups.length > 1){
-        for(let k=0;k<rb.len;k++){
-          if(k < groups.length) targets.push({from:rb.start+k, to:rb.start+k+1, r:groups[k]});
-        }
-        if(groups.length > rb.len && targets.length) targets[targets.length-1].r += groups.slice(rb.len).join('');
-      }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
-      targets.forEach(tg=>{
+      rubyTargets(rb).forEach(tg=>{
         // 基底文字の実寸の中央に置く（末尾に付く字間ぶんは含めない）
         const a = Math.min(tg.from, cs.length), b = Math.min(tg.to, cs.length);
         const rt = document.createElementNS(NS,'tspan');
@@ -3258,7 +3270,9 @@ function buildSVGString(view){
   const d = state.doc;
   const vw = view ? view.w  : d.w, vh = view ? view.h  : d.h;   // 表示領域
   const pw = view ? view.px : d.w, ph = view ? view.py : d.h;   // 出力画素数
-  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${pw}" height="${ph}" viewBox="0 0 ${vw} ${vh}">`;
+  /* xml:lang を付けておく。画像として読み込まれたSVGは元のページとは別扱いになり、
+     言語が分からないと和文の代替書体に欧文用のものが選ばれて字面が変わることがある */
+  let out = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:lang="ja" width="${pw}" height="${ph}" viewBox="0 0 ${vw} ${vh}">`;
   const defs = dynamicDefStrings();
   if(defs.length) out += '<defs>'+defs.join('')+'</defs>';
   if(d.bg && d.bg!=='none') out += `<rect width="${vw}" height="${vh}" fill="${d.bg}"/>`;
@@ -3293,8 +3307,12 @@ function usedWebFonts(){
   });
   return map;
 }
+/* 直前の書き出しで、書き出しデータに埋め込めなかったオンライン書体。
+   埋め込めないと書き出し先で別の書体に置き換わり、字面が変わってしまう */
+let embedMissing = [];
 async function fontEmbedCSS(){
   let css = '';
+  embedMissing = [];
   for(const [fam, use] of usedWebFonts()){
     const cf = (state.customFonts||[]).find(c=>c.name===fam);
     if(cf){ css += `@font-face{font-family:"${fam}";src:url(${cf.data});}`; continue; }
@@ -3312,14 +3330,22 @@ async function fontEmbedCSS(){
           bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
         txt = txt.split(u).join('data:font/woff2;base64,' + btoa(bin));
       }
-      css += txt;
-    }catch(err){ /* オフライン時はフォント埋め込みなしで続行 */ }
+      // 書体ファイルを取り込めていなければ（外部URLが残っていれば）埋め込み失敗とみなす
+      if(/url\(https?:/.test(txt) || !/@font-face/.test(txt)) embedMissing.push(fam);
+      else css += txt;
+    }catch(err){ embedMissing.push(fam); }   // オフライン時は埋め込みなしで続行
   }
   return css;
 }
 async function buildSVGStringWithFonts(view){
   const svg = buildSVGString(view);
   const css = await fontEmbedCSS();
+  if(embedMissing.length){
+    // 黙って別の書体に置き換わると、字面も字送りも変わってしまうので必ず知らせる
+    alert('オンライン書体を書き出しデータに埋め込めませんでした（' + embedMissing.join('、') + '）。\n'
+        + '書き出したファイルでは別の書体に置き換わり、字間や字面が変わります。\n'
+        + '通信を確認してやり直すか、書体ファイルを「書体を読み込む」から読み込んでください。');
+  }
   return css ? svg.replace(/^(<svg[^>]*>)/, (m,p1)=> p1 + '<style>' + css + '</style>') : svg;
 }
 /* 保存・書き出しのファイル名。既定でその日の日付を末尾に付ける（キャプション工房と同じ _YYYYMMDD 形式）。
