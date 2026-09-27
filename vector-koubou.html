@@ -709,6 +709,52 @@ function vertClass(ch){
   if(VERT_ROT_CHARS.has(ch) || vertHalf(ch)) return 'rot';
   return 'up';
 }
+/* ---- 縦中横 ----
+   縦組みの中で、半角数字の短い連なりを横に並べたまま1文字分のます目に収める。
+   既定は2桁まで（日本語組版の通例）。0で使わない */
+const TCY_STEPS = [[0,'使わない'],[1,'1桁'],[2,'2桁まで'],[3,'3桁まで'],[4,'4桁まで']];
+function tcyMax(s){
+  const v = (s && s.tcy != null) ? Math.round(+s.tcy) : 2;
+  return clamp(isFinite(v) ? v : 2, 0, 4);
+}
+const TCY_DIGIT = /[0-9]/, TCY_LETTER = /[A-Za-z]/;
+/* 1文字ごとの送り量と、縦中横のまとまりを求める。
+   tcy は 先頭なら桁数、続きなら-1、それ以外は0 */
+function vertPlan(sh){
+  const text = String(sh.text||'');
+  const attrs = (sh.runs && sh.runs.length) ? charAttrs(sh) : null;
+  const baseA = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)};
+  const at = i => (attrs && attrs[i]) ? attrs[i] : baseA;
+  const adv = new Float64Array(text.length);
+  const tcy = new Int8Array(text.length);
+  const maxT = tcyMax(sh);
+  let key = null;
+  const setFont = a => { const k = attrKey(a);
+    if(k !== key){ measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; key = k; } };
+  let i = 0;
+  while(i < text.length){
+    if(TCY_DIGIT.test(text[i])){
+      let j = i;
+      while(j < text.length && TCY_DIGIT.test(text[j])) j++;
+      /* 桁数が多すぎるもの、英字に続く数字（語の一部）はまとめない。
+         そのときは数字の連なりを丸ごと通常扱いにする（途中だけまとめると分断される） */
+      const fits = maxT >= 1 && (j - i) <= maxT &&
+                   !TCY_LETTER.test(text[i-1]||'') && !TCY_LETTER.test(text[j]||'');
+      if(fits){
+        adv[i] = at(i).size; tcy[i] = j - i;          // まとめて1文字分
+        for(let k=i+1;k<j;k++){ adv[k] = 0; tcy[k] = -1; }
+      }else{
+        for(let k=i;k<j;k++){ const a = at(k); setFont(a);
+          adv[k] = measureCtx.measureText(text[k]).width; }
+      }
+      i = j; continue;
+    }
+    const a = at(i); setFont(a);
+    adv[i] = vertHalf(text[i]) ? measureCtx.measureText(text[i]).width : a.size;
+    i++;
+  }
+  return {adv, tcy};
+}
 /* 書体の上下の伸び。正立の字をます目の中に収める位置と、回した字の横位置に使う */
 const vmetCache = new Map();
 function fontVMetrics(fontStr, size){
@@ -736,15 +782,22 @@ function makeMeasurer(sh){
   const runs = normalizeRuns(sh);
   const vert = isVertical(sh);
   const setFont = a => { measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; };
+  /* 縦組みは全角1em・半角は実寸で送り、縦中横のまとまりは全体で1文字分とする */
+  if(vert){
+    const plan = vertPlan(sh);
+    const seg = g =>{
+      let sum = 0;
+      for(let k=0;k<g.t.length;k++){
+        const i = g.idx + k;
+        sum += (plan.adv[i] || 0) + (plan.tcy[i] === -1 ? 0 : baseLS);
+      }
+      return sum;
+    };
+    return { seg, charW: i => plan.adv[i]||0, perChar:true, vert:true, plan,
+             attrs: runs.length ? charAttrs(sh) : null };
+  }
   if(!runs.length){
-    const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)};
-    setFont(base);
-    // 縦組みは全角1em・半角は実寸で送る（字詰めは効かないので1字ずつ足す）
-    if(vert) return { seg: g => {
-        let sum = 0;
-        for(const ch of g.t) sum += (vertHalf(ch) ? measureCtx.measureText(ch).width : base.size) + baseLS;
-        return sum;
-      }, charW: () => 0, perChar:false, attrs:null, vert:true };
+    setFont({font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)});
     return { seg: g => measureCtx.measureText(g.t).width + baseLS*g.t.length,
              charW: () => 0, perChar:false, attrs:null };
   }
@@ -870,27 +923,30 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
     segs.forEach(g=>{ for(let k=0;k<g.t.length;k++) cs.push({c:g.t.charAt(k), i:g.idx+k}); });
     return cs;
   };
-  // 1字ずつの送り（全角は1em、半角は実寸）。末尾に行末の位置が入る
+  const plan = mz.plan || vertPlan(spec);
+  // 1字ずつの送り（全角は1em、半角は実寸、縦中横のまとまりは全体で1文字分）
   const charYs = (cs, y0, ls)=>{
     const ys = new Array(cs.length+1);
     let p = y0;
     for(let k=0;k<cs.length;k++){
+      const i = cs[k].i;
       ys[k] = p;
-      const a = attrs ? attrs[cs[k].i] : null;
-      measureCtx.font = fontOf(a);
-      p += (vertHalf(cs[k].c) ? measureCtx.measureText(cs[k].c).width : sizeOf(a)) + ls;
+      p += (plan.adv[i] || 0) + (plan.tcy[i] === -1 ? 0 : ls);
     }
     ys[cs.length] = p;
     return ys;
+  };
+  // ます目の中で基準線が来る高さの割合（おおむね0.88）
+  const baseRatio = (font, em)=>{
+    const vm = fontVMetrics(font, em);
+    return (vm.asc + vm.desc > 0) ? clamp(vm.asc/(vm.asc+vm.desc), 0.6, 0.95) : 0.88;
   };
   /* 1字を、列の中心 cx・ます目の上端 y に置くときの基準点と回転 */
   const place = (ch, a, cx, y)=>{
     const font = fontOf(a), em = sizeOf(a);
     measureCtx.font = font;
     const w = measureCtx.measureText(ch).width;
-    const vm = fontVMetrics(font, em);
-    // ます目の中で文字の基準線が来る高さの割合（おおむね0.88）
-    const r = (vm.asc + vm.desc > 0) ? clamp(vm.asc/(vm.asc+vm.desc), 0.6, 0.95) : 0.88;
+    const r = baseRatio(font, em);
     const cls = vertClass(ch);
     if(cls === 'rot'){
       /* 90°回すと、字の上側が右、下側が左へ来る。ます目の中で釣り合う位置に置く
@@ -912,14 +968,15 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
     }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
     return targets;
   };
-  // 同じ書式・同じ立て方が続くところをひとまとまりにする
+  // 同じ書式・同じ立て方が続くところをひとまとまりにする（縦中横は独立したまとまり）
   const pieces = (cs, cuts)=>{
     const out = [];
     cs.forEach((z,k)=>{
       const a = attrs ? (attrs[z.i] || null) : null;
-      const cls = vertClass(z.c);
+      const tv = plan.tcy[z.i] || 0;
+      const cls = tv ? 'tcy' : vertClass(z.c);
       const prev = out[out.length-1];
-      const joins = prev && !cuts.has(k) && prev.cls===cls &&
+      const joins = prev && !cuts.has(k) && prev.cls===cls && (tv ? tv < 0 : true) &&
         (attrs ? (a && prev.a && attrKey(prev.a)===attrKey(a)) : true);
       if(joins) prev.t += z.c;
       else out.push({t:z.c, a, at:k, cls});
@@ -944,15 +1001,29 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
     (ln.ruby||[]).forEach(rb=> rubyTargets(rb).forEach(tg=>{ cuts.add(tg.from); cuts.add(tg.to); }));
     pieces(cs, cuts).forEach(pc=>{
       if(!pc.t) return;
-      const xs = [], yy = [];
-      for(let k=0;k<pc.t.length;k++){
-        const p = place(pc.t.charAt(k), pc.a, cx, ys[pc.at+k]);
-        xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
-      }
       const tp = document.createElementNS(NS,'tspan');
-      tp.setAttribute('x', xs.join(' '));
-      tp.setAttribute('y', yy.join(' '));
-      if(pc.cls === 'rot') tp.setAttribute('rotate','90');
+      if(pc.cls === 'tcy'){
+        /* 縦中横。1文字分のます目に横一列で収める。
+           はみ出すときは字幅ごと詰めて、行の幅からはみ出さないようにする */
+        const em = sizeOf(pc.a), font = fontOf(pc.a);
+        measureCtx.font = font;
+        const w = measureCtx.measureText(pc.t).width;
+        tp.setAttribute('x', fmtT(cx - Math.min(w, em)/2));
+        tp.setAttribute('y', fmtT(ys[pc.at] + em*baseRatio(font, em)));
+        if(w > em + 0.01){
+          tp.setAttribute('textLength', fmtT(em));
+          tp.setAttribute('lengthAdjust','spacingAndGlyphs');
+        }
+      }else{
+        const xs = [], yy = [];
+        for(let k=0;k<pc.t.length;k++){
+          const p = place(pc.t.charAt(k), pc.a, cx, ys[pc.at+k]);
+          xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
+        }
+        tp.setAttribute('x', xs.join(' '));
+        tp.setAttribute('y', yy.join(' '));
+        if(pc.cls === 'rot') tp.setAttribute('rotate','90');
+      }
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
@@ -1172,7 +1243,7 @@ function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type
 function frameTextSpec(s, boxW){
   return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold, weight:s.weight,
     boxW, align:textAlign(s), justify:s.justify, ls:s.ls, lineH:s.lineH,
-    rubyLS:s.rubyLS, rubyDy:s.rubyDy, vertical:isVertical(s)};
+    rubyLS:s.rubyLS, rubyDy:s.rubyDy, vertical:isVertical(s), tcy:s.tcy};
 }
 /* 枠内で文字を組むときの行長（横組みは幅、縦組みは高さ） */
 function frameLineLen(s, box){ return isVertical(s) ? box.h : box.w; }
@@ -2923,7 +2994,10 @@ function renderProps(){
     }
     const dirRow = (id, rep)=> propRow(`<label>組み方向</label><select id="${id}" style="flex:1" title="縦書きにすると、行は上から下へ流れ、行は右から左へ進みます">` +
       `<option value="h" ${isVertical(rep)?'':'selected'}>横書き</option>` +
-      `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`);
+      `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`) +
+      (isVertical(rep) ? propRow(`<label>縦中横</label><select id="${id}Tcy" style="flex:1" title="縦書きの中で、半角数字の短い連なりを横に並べたまま1文字分に収めます（例: 平成30年）。英字に挟まれた数字は語の一部なので対象外です">` +
+        TCY_STEPS.map(([v,l])=>`<option value="${v}" ${tcyMax(rep)===v?'selected':''}>${l}</option>`).join('') +
+        `</select>`) : '');
     if(allFrame){
       html += `<div class="pgroup">` +
         (one ? propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(rep.text||'')}</textarea>`) : '') +
@@ -3090,6 +3164,9 @@ function renderProps(){
     const setDir = v => eachFit(sh=>{ if(v==='v') sh.vertical = true; else delete sh.vertical; });
     bindSel('pTextDir', setDir);
     bindSel('pFrameDir', setDir);
+    const setTcy = v => eachFit(sh=> sh.tcy = clamp(Math.round(+v)||0, 0, 4));
+    bindSel('pTextDirTcy', setTcy);
+    bindSel('pFrameDirTcy', setTcy);
     // 文字組みの数値はスライダーで即時反映（キャプション工房と共通仕様）
     const setLS   = v=> eachFit(sh=> sh.ls = v ? clamp(v,-20,100) : undefined);
     const setLineH= v=> eachFit(sh=> sh.lineH = clamp(v,0.5,4));
@@ -3585,11 +3662,19 @@ function textToOutline(textEl){
       const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
       const rot = parseFloat(tp.getAttribute('rotate')) || 0;   // 縦組みで立てる字
       const str = tp.textContent;
+      // 縦中横で字幅を詰めているぶんは、描くときも同じだけ横に縮める
+      let sx = 1;
+      const tl = parseFloat(tp.getAttribute('textLength'));
+      if(tl > 0 && tp.getAttribute('lengthAdjust') === 'spacingAndGlyphs'){
+        measureCtx.font = font;
+        const nat = measureCtx.measureText(str).width;
+        if(nat > 0) sx = tl / nat;
+      }
       for(let i=0;i<str.length;i++){
         if(!/\S/.test(str[i])) continue;                 // 空白は字形が無い
         const p = tp.getStartPositionOfChar(i);
         glyphs.push({c:str[i], x:p.x, y:p.y, font, size:parseFloat(cs.fontSize)||16,
-                     rot, fill:cs.fill, stroke:cs.stroke, sw:parseFloat(cs.strokeWidth)||0});
+                     rot, sx, fill:cs.fill, stroke:cs.stroke, sw:parseFloat(cs.strokeWidth)||0});
       }
     });
     box = textEl.getBBox();
@@ -3631,12 +3716,17 @@ function textToOutline(textEl){
     glyphs.forEach(g=>{
       if(layer.kind==='fill' ? g.fill!==layer.paint : (g.stroke!==layer.paint || !(g.sw>0))) return;
       ctx.font = g.font;
-      // 回す字は、SVGの rotate と同じく字の基準点まわりに回す
-      if(g.rot){ ctx.save(); ctx.translate(g.x, g.y); ctx.rotate(g.rot*Math.PI/180); }
-      const gx = g.rot ? 0 : g.x, gy = g.rot ? 0 : g.y;
+      // 回す字・詰めた字は、SVGと同じく字の基準点まわりで同じ変形をかける
+      const moved = g.rot || (g.sx && Math.abs(g.sx-1) > 1e-4);
+      if(moved){
+        ctx.save(); ctx.translate(g.x, g.y);
+        if(g.rot) ctx.rotate(g.rot*Math.PI/180);
+        if(g.sx && g.sx !== 1) ctx.scale(g.sx, 1);
+      }
+      const gx = moved ? 0 : g.x, gy = moved ? 0 : g.y;
       if(layer.kind==='fill') ctx.fillText(g.c, gx, gy);
       else { ctx.lineWidth = g.sw; ctx.strokeText(g.c, gx, gy); }
-      if(g.rot) ctx.restore();
+      if(moved) ctx.restore();
     });
     ctx.restore();
     const px = ctx.getImageData(0,0,W,H).data;
