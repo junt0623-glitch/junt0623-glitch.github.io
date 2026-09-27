@@ -683,11 +683,45 @@ function tokenizeRuby(para, base){
 /* 文字の配置。旧データは均等割付のON/OFF（justify）だけを持つので、それを引き継ぐ */
 const TEXT_ALIGNS = [['left','左揃え'],['center','中央揃え'],['right','右揃え'],['justify','均等割付']];
 const TEXT_VALIGNS = [['top','上揃え'],['middle','中央'],['bottom','下揃え']];
+/* 縦組みでは行が上から下へ流れ、行は右から左へ進むので、同じ設定でも呼び名が変わる */
+const TEXT_ALIGNS_V = [['left','上揃え'],['center','中央揃え'],['right','下揃え'],['justify','均等割付']];
+const TEXT_VALIGNS_V = [['top','右揃え'],['middle','中央'],['bottom','左揃え']];
+function alignOptions(rep){ return isVertical(rep) ? TEXT_ALIGNS_V : TEXT_ALIGNS; }
+function valignOptions(rep){ return isVertical(rep) ? TEXT_VALIGNS_V : TEXT_VALIGNS; }
 function textAlign(s){
   if(s && s.align) return s.align;
   return (s && s.justify===false) ? 'left' : 'justify';
 }
 function textValign(s){ return (s && s.valign) || 'top'; }
+function isVertical(s){ return !!(s && s.vertical); }
+/* ================= 縦組み =================
+   全角は1em、半角（欧文・数字・半角記号）は実寸ぶん送る。
+   括弧・長音・ダッシュ・欧文は90°回して立て、句読点は字面を右上へ寄せる。
+   回し方も送りも自前で決める。表示側の縦組み機能に任せると、書体や閲覧環境ごとに
+   字形も字送りも変わり、書き出したデータが作成時と一致しなくなる */
+const VERT_ROT_CHARS = new Set([...'ー－ｰ—―‐–−〜～｜|／/＼\\（）()「」『』〔〕［］[]｛｝{}〈〉《》【】〖〗＜＞<>≪≫…‥']);
+const VERT_TURN_CHARS = new Set([...'、。，．']);
+const HALF_WIDTH = /[ -ÿͰ-ӿ｡-ￜ￨-￮]/;
+function vertHalf(ch){ return HALF_WIDTH.test(ch); }
+/* 正立(up) / 90°回す(rot) / 右上へ寄せる(turn) */
+function vertClass(ch){
+  if(VERT_TURN_CHARS.has(ch)) return 'turn';
+  if(VERT_ROT_CHARS.has(ch) || vertHalf(ch)) return 'rot';
+  return 'up';
+}
+/* 書体の上下の伸び。正立の字をます目の中に収める位置と、回した字の横位置に使う */
+const vmetCache = new Map();
+function fontVMetrics(fontStr, size){
+  let m = vmetCache.get(fontStr);
+  if(!m){
+    measureCtx.font = fontStr;
+    const t = measureCtx.measureText('あ漢Mg');
+    const asc = t.fontBoundingBoxAscent, desc = t.fontBoundingBoxDescent;
+    m = (asc > 0 && desc >= 0) ? {asc, desc} : {asc:size*0.88, desc:size*0.12};
+    vmetCache.set(fontStr, m);
+  }
+  return m;
+}
 /* 行の実寸（均等割付で広げる前の幅）。中央・右揃えの寄せ量を出すのに使う */
 function lineWidth(ln, spec){
   const t = ln.text || '';
@@ -700,9 +734,17 @@ function lineWidth(ln, spec){
 function makeMeasurer(sh){
   const baseLS = +sh.ls || 0;
   const runs = normalizeRuns(sh);
+  const vert = isVertical(sh);
   const setFont = a => { measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; };
   if(!runs.length){
-    setFont({font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)});
+    const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)};
+    setFont(base);
+    // 縦組みは全角1em・半角は実寸で送る（字詰めは効かないので1字ずつ足す）
+    if(vert) return { seg: g => {
+        let sum = 0;
+        for(const ch of g.t) sum += (vertHalf(ch) ? measureCtx.measureText(ch).width : base.size) + baseLS;
+        return sum;
+      }, charW: () => 0, perChar:false, attrs:null, vert:true };
     return { seg: g => measureCtx.measureText(g.t).width + baseLS*g.t.length,
              charW: () => 0, perChar:false, attrs:null };
   }
@@ -713,14 +755,15 @@ function makeMeasurer(sh){
   for(let i=0;i<attrs.length;i++){
     const k = attrKey(attrs[i]);
     if(k !== key){ setFont(attrs[i]); key = k; }
-    cw[i] = measureCtx.measureText(text.charAt(i)).width;
+    cw[i] = (vert && !vertHalf(text.charAt(i))) ? attrs[i].size
+                                                : measureCtx.measureText(text.charAt(i)).width;
   }
   const seg = g => {
     let sum = 0;
     for(let k=0;k<g.t.length;k++) sum += (cw[g.idx+k] || 0) + baseLS;
     return sum;
   };
-  return { seg, charW: i => cw[i]||0, perChar:true, attrs };
+  return { seg, charW: i => cw[i]||0, perChar:true, attrs, vert };
 }
 function layoutText(s){
   normalizeRuns(s);
@@ -797,7 +840,161 @@ function layoutText(s){
 }
 /* 行のtspan群を構築する共通処理（通常テキスト・枠内テキストで共用）。
    行位置は絶対y指定（ルビ用tspanを挟んでもdy連鎖が壊れないようにするため） */
+/* 縦組みの組版。行は上から下へ流れ、行は右から左へ進む。
+   1字ずつ位置を明記し、回す字は rotate で立てる（どの環境でも同じ形・同じ送りになる） */
+function buildVerticalLines(t, spec, xRight, yTop, lines){
+  const NS = 'http://www.w3.org/2000/svg';
+  const size = spec.size, lh = (spec.lineH || 1.25)*size;
+  const mz = makeMeasurer(spec);
+  const attrs = mz.attrs;
+  const baseLS = +spec.ls || 0;
+  const rows = lines || layoutText(spec);
+  const align = textAlign(spec);
+  t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
+  const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
+                        : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+  const sizeOf = a => a ? a.size : size;
+  const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
+  // 行の字面の長さ（行末の空白を除く）
+  const lineW = ln => (ln.w != null ? ln.w
+                      : ln.segs ? Math.max(0, ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS) : 0);
+  const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
+  const offsetOf = ln=>{
+    if(align==='center') return Math.max(0, (refW - lineW(ln))/2);
+    if(align==='right')  return Math.max(0, refW - lineW(ln));
+    return 0;
+  };
+  const lineChars = ln=>{
+    const segs = ln.segs || [{t:ln.text, idx:0}];
+    const cs = [];
+    segs.forEach(g=>{ for(let k=0;k<g.t.length;k++) cs.push({c:g.t.charAt(k), i:g.idx+k}); });
+    return cs;
+  };
+  // 1字ずつの送り（全角は1em、半角は実寸）。末尾に行末の位置が入る
+  const charYs = (cs, y0, ls)=>{
+    const ys = new Array(cs.length+1);
+    let p = y0;
+    for(let k=0;k<cs.length;k++){
+      ys[k] = p;
+      const a = attrs ? attrs[cs[k].i] : null;
+      measureCtx.font = fontOf(a);
+      p += (vertHalf(cs[k].c) ? measureCtx.measureText(cs[k].c).width : sizeOf(a)) + ls;
+    }
+    ys[cs.length] = p;
+    return ys;
+  };
+  /* 1字を、列の中心 cx・ます目の上端 y に置くときの基準点と回転 */
+  const place = (ch, a, cx, y)=>{
+    const font = fontOf(a), em = sizeOf(a);
+    measureCtx.font = font;
+    const w = measureCtx.measureText(ch).width;
+    const vm = fontVMetrics(font, em);
+    // ます目の中で文字の基準線が来る高さの割合（おおむね0.88）
+    const r = (vm.asc + vm.desc > 0) ? clamp(vm.asc/(vm.asc+vm.desc), 0.6, 0.95) : 0.88;
+    const cls = vertClass(ch);
+    if(cls === 'rot'){
+      /* 90°回すと、字の上側が右、下側が左へ来る。ます目の中で釣り合う位置に置く
+         （書体ごとの外形ではなくます目で決めるので、行の幅からはみ出さない） */
+      return {x: cx - em*(r - 0.5), y, rot:true};
+    }
+    const base = y + em*r;
+    if(cls === 'turn') return {x: cx - w/2 + em*0.5, y: base - em*0.5, rot:false};
+    return {x: cx - w/2, y: base, rot:false};
+  };
+  const rubyTargets = rb=>{
+    const groups = rb.r.split(/[ 　]+/).filter(g=>g);
+    const targets = [];
+    if(groups.length > 1){
+      for(let k=0;k<rb.len;k++){
+        if(k < groups.length) targets.push({from:rb.start+k, to:rb.start+k+1, r:groups[k]});
+      }
+      if(groups.length > rb.len && targets.length) targets[targets.length-1].r += groups.slice(rb.len).join('');
+    }else targets.push({from:rb.start, to:rb.start+rb.len, r:rb.r});
+    return targets;
+  };
+  // 同じ書式・同じ立て方が続くところをひとまとまりにする
+  const pieces = (cs, cuts)=>{
+    const out = [];
+    cs.forEach((z,k)=>{
+      const a = attrs ? (attrs[z.i] || null) : null;
+      const cls = vertClass(z.c);
+      const prev = out[out.length-1];
+      const joins = prev && !cuts.has(k) && prev.cls===cls &&
+        (attrs ? (a && prev.a && attrKey(prev.a)===attrKey(a)) : true);
+      if(joins) prev.t += z.c;
+      else out.push({t:z.c, a, at:k, cls});
+    });
+    return out;
+  };
+  const rowSize = ln=>{
+    if(!attrs || !ln.segs) return size;
+    let mx = size;
+    ln.segs.forEach(g=>{ for(let k=0;k<g.t.length;k++){
+      const a = attrs[g.idx+k]; if(a && a.size>mx) mx = a.size; } });
+    return mx;
+  };
+  let cx = xRight - size/2;            // 行（列）の中心。右から左へ進む
+  rows.forEach((ln,i)=>{
+    if(i>0) cx -= Math.max(lh, Math.max(rowSize(rows[i-1]), rowSize(ln))*(spec.lineH || 1.25));
+    const yStart = yTop + offsetOf(ln);
+    const cs = lineChars(ln);
+    const ls = ln.ls || 0;
+    const ys = charYs(cs, yStart, ls);
+    const cuts = new Set();
+    (ln.ruby||[]).forEach(rb=> rubyTargets(rb).forEach(tg=>{ cuts.add(tg.from); cuts.add(tg.to); }));
+    pieces(cs, cuts).forEach(pc=>{
+      if(!pc.t) return;
+      const xs = [], yy = [];
+      for(let k=0;k<pc.t.length;k++){
+        const p = place(pc.t.charAt(k), pc.a, cx, ys[pc.at+k]);
+        xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
+      }
+      const tp = document.createElementNS(NS,'tspan');
+      tp.setAttribute('x', xs.join(' '));
+      tp.setAttribute('y', yy.join(' '));
+      if(pc.cls === 'rot') tp.setAttribute('rotate','90');
+      if(pc.a){
+        tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
+        tp.setAttribute('font-size', fmtT(pc.a.size));
+        tp.setAttribute('font-weight', String(pc.a.weight));
+        if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
+      }
+      tp.textContent = pc.t;
+      t.appendChild(tp);
+    });
+    (ln.ruby||[]).forEach(rb=>{
+      const a0 = (attrs && cs[rb.start]) ? attrs[cs[rb.start].i] : null;
+      const rubySize = sizeOf(a0) * 0.5;
+      const rls = +spec.rubyLS || 0;
+      // ルビは行の右側に添える（+で外側へ）
+      const rcx = cx + sizeOf(a0)*0.5 + rubySize*0.5 + (+spec.rubyDy||0);
+      rubyTargets(rb).forEach(tg=>{
+        const a = Math.min(tg.from, cs.length), b = Math.min(tg.to, cs.length);
+        const span = (ys[b] - ls) - ys[a];
+        const n = tg.r.length;
+        const total = n*rubySize + (n-1)*rls;
+        let y = ys[a] + (span - total)/2;
+        const xs = [], yy = [];
+        for(const ch of tg.r){
+          const p = place(ch, {font:(a0?a0.font:spec.font), size:rubySize,
+                               weight:(a0?a0.weight:textWeight(spec))}, rcx, y);
+          xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
+          y += rubySize + rls;
+        }
+        const rt = document.createElementNS(NS,'tspan');
+        rt.setAttribute('x', xs.join(' '));
+        rt.setAttribute('y', yy.join(' '));
+        rt.setAttribute('font-size', fmtT(rubySize));
+        rt.setAttribute('data-ruby','1');
+        if([...tg.r].every(c=> vertClass(c)==='rot')) rt.setAttribute('rotate','90');
+        rt.textContent = tg.r;
+        t.appendChild(rt);
+      });
+    });
+  });
+}
 function buildTextLines(t, spec, x, y0, lines){
+  if(isVertical(spec)) return buildVerticalLines(t, spec, x, y0, lines);
   const NS = 'http://www.w3.org/2000/svg';
   const size = spec.size, lh = (spec.lineH || 1.25)*size;
   const mz = makeMeasurer(spec);
@@ -975,8 +1172,10 @@ function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type
 function frameTextSpec(s, boxW){
   return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold, weight:s.weight,
     boxW, align:textAlign(s), justify:s.justify, ls:s.ls, lineH:s.lineH,
-    rubyLS:s.rubyLS, rubyDy:s.rubyDy};
+    rubyLS:s.rubyLS, rubyDy:s.rubyDy, vertical:isVertical(s)};
 }
+/* 枠内で文字を組むときの行長（横組みは幅、縦組みは高さ） */
+function frameLineLen(s, box){ return isVertical(s) ? box.h : box.w; }
 /* 字形のインクが送り幅から外へ出る分の許容量 */
 function frameInkPad(s){ return Math.ceil((s.size||16)*0.12); }
 /* 1行目にルビがある分だけ、クリップで欠けないよう先頭行を下げる量 */
@@ -1026,7 +1225,7 @@ function fitFrameToTextBox(s, needW, needH){
     s.cx += b.x - nb.x; s.cy += b.y - nb.y;
   }
 }
-/* 組んだ文字全体の高さ（先頭行の上端から最終行の下端まで） */
+/* 組んだ文字全体の、行が進む向きの厚み（横組みは高さ、縦組みは幅） */
 function textBlockHeight(spec, lines, rubyPad){
   const size = spec.size || 16, lh = (spec.lineH || 1.25)*size;
   return rubyPad + size*0.9 + Math.max(0, lines.length-1)*lh + size*0.35;
@@ -1038,21 +1237,16 @@ function autoFitFrame(s){
   if(!isFrameShape(s) || s.fitText===false || !s.text) return false;
   const size = s.size || 16;
   const box = frameTextBox(s);
-  const boxW = box.w;
   // 均等割付を切って測る（均等割付の文字間は枠幅ぴったりに広げるため、実際の字幅にならない）
-  const spec = frameTextSpec(s, boxW);
+  const spec = frameTextSpec(s, frameLineLen(s, box));
   const lines = layoutText({...spec, justify:false});
   if(!lines.length) return false;
-  measureCtx.font = `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
-  const baseLS = +s.ls || 0;
-  let maxW = 0;
-  lines.forEach(ln=>{
-    const t = ln.text || '';
-    maxW = Math.max(maxW, measureCtx.measureText(t).width + baseLS*Math.max(0, t.length-1));
-  });
   const rubyPad = frameRubyPad(s, lines);
-  const needW = clamp(Math.ceil(maxW), 10, DOC_MAX_PX);
-  const needH = clamp(Math.ceil(textBlockHeight(spec, lines, rubyPad)), 6, DOC_MAX_PX);
+  // 行の長さは組み方向に沿った実寸。厚みは行が進む向き
+  const maxLen = Math.max(0, ...lines.map(ln=> ln.w || 0));
+  const thick = textBlockHeight(spec, lines, rubyPad);
+  const needW = clamp(Math.ceil(isVertical(s) ? thick : maxLen), 10, DOC_MAX_PX);
+  const needH = clamp(Math.ceil(isVertical(s) ? maxLen : thick), 6, DOC_MAX_PX);
   if(Math.abs(needW-box.w) < 0.5 && Math.abs(needH-box.h) < 0.5) return false;
   fitFrameToTextBox(s, needW, needH);
   return true;
@@ -1061,15 +1255,18 @@ function frameTextEl(s){
   const NS = 'http://www.w3.org/2000/svg';
   const box = frameTextBox(s);
   const size = s.size || 16;
-  const fake = frameTextSpec(s, box.w);
+  const vert = isVertical(s);
+  const fake = frameTextSpec(s, frameLineLen(s, box));
   const t = document.createElementNS(NS,'text');
   const lines = layoutText(fake);
   const rubyPad = frameRubyPad(s, lines);
-  // 縦位置: 余った高さの分だけ全体を下げる（自動調整オンなら余りが無いので見た目は変わらない）
-  const slack = Math.max(0, box.h - textBlockHeight(fake, lines, rubyPad));
+  /* 行が進む向きの寄せ。余った厚みの分だけ全体をずらす
+     （横組みは下へ、縦組みは行が右から左へ進むので左へ） */
+  const slack = Math.max(0, (vert ? box.w : box.h) - textBlockHeight(fake, lines, rubyPad));
   const va = textValign(s);
   const vOff = va==='middle' ? slack/2 : va==='bottom' ? slack : 0;
-  const x = box.x, y = box.y + vOff + size*0.9 + rubyPad;
+  const x = vert ? box.x + box.w - vOff - rubyPad : box.x;
+  const y = vert ? box.y : box.y + vOff + size*0.9 + rubyPad;
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
   t.setAttribute('font-size', size);
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
@@ -1192,6 +1389,13 @@ function geomBBox(s){
       const el = $('el-'+s.id);
       if(el){ const b = el.getBBox(); return {x:b.x, y:b.y, w:b.width, h:b.height}; }
       const lh = (s.lineH||1.25)*s.size;
+      if(isVertical(s)){
+        // 縦組みは行が右から左へ進む。(x,y) は一行目の右上
+        const n = s.boxW ? layoutText(s).length : 1;
+        const len = s.boxW || s.size*String(s.text||'').length;
+        const th = s.size + Math.max(0, n-1)*lh;
+        return {x:s.x - th, y:s.y, w:th, h:len};
+      }
       if(s.boxW){
         const n = layoutText(s).length;
         return {x:s.x, y:s.y-s.size, w:s.boxW, h:lh*Math.max(0,n-1)+s.size*1.2};
@@ -2717,19 +2921,23 @@ function renderProps(){
         propRow(`<label class="toggle"><input type="checkbox" id="pSmooth" ${rep.smooth?'checked':''}>曲線化</label>
                  <label class="toggle"><input type="checkbox" id="pClosed" ${rep.closed?'checked':''}>閉じる</label>`) + `</div>`;
     }
+    const dirRow = (id, rep)=> propRow(`<label>組み方向</label><select id="${id}" style="flex:1" title="縦書きにすると、行は上から下へ流れ、行は右から左へ進みます">` +
+      `<option value="h" ${isVertical(rep)?'':'selected'}>横書き</option>` +
+      `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`);
     if(allFrame){
       html += `<div class="pgroup">` +
         (one ? propRow(`<label>枠内文字</label><textarea id="pFrameText" rows="1" style="flex:1 1 100%" placeholder="枠内に表示するテキスト" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(rep.text||'')}</textarea>`) : '') +
         numIn('pFrameSize','サイズ',rep.size||16,1,4,800,'px') +
+        dirRow('pFrameDir', rep) +
         propRow(`<label class="toggle" title="文字を入れると、全文が収まる大きさに枠を自動で合わせます">
           <input type="checkbox" id="pFrameFit" ${rep.fitText!==false?'checked':''}>文字に合わせて枠を自動調整</label>`) +
         rangeIn('pFrameLS','文字間',rep.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
         rangeIn('pFrameLineH','行間',rep.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
-        propRow(`<label>揃え</label><select id="pFrameAlign" style="flex:1" title="行の横方向の配置。均等割付は行末を枠の幅に揃えます">` +
-          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
+        propRow(`<label>揃え</label><select id="pFrameAlign" style="flex:1" title="行の中での配置。均等割付は行末を枠に揃えます">` +
+          alignOptions(rep).map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
-        propRow(`<label>縦位置</label><select id="pFrameValign" style="flex:1" title="枠の中での縦方向の配置。枠の自動調整がオフのときに効きます">` +
-          TEXT_VALIGNS.map(([v,l])=>`<option value="${v}" ${textValign(rep)===v?'selected':''}>${l}</option>`).join('') +
+        propRow(`<label>${isVertical(rep)?'行の位置':'縦位置'}</label><select id="pFrameValign" style="flex:1" title="枠の中で、行が進む向きの配置。枠の自動調整がオフのときに効きます">` +
+          valignOptions(rep).map(([v,l])=>`<option value="${v}" ${textValign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
         rangeIn('pFrameRubyLS','ルビ間',rep.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
         rangeIn('pFrameRubyDy','ルビ位置',rep.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
@@ -2749,6 +2957,7 @@ function renderProps(){
         (one ? propRow(`<textarea id="pText" rows="1" style="flex:1 1 100%" title="ルビ: 漢字《かんじ》 または ｜対象《るび》 と書くと振り仮名を表示">${esc(one.text)}</textarea>`) : '') +
         (one ? partFormatHTML(one) : '') +
         numIn('pSize','サイズ',rep.size,1,4,800,'px') +
+        dirRow('pTextDir', rep) +
         propRow(`<label>書体</label>${fontSelectHTML('pFont', rep)}` +
           ``) +
         rangeIn('pWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
@@ -2760,11 +2969,11 @@ function renderProps(){
         rangeIn('pLS','文字間',rep.ls||0,-20,100,0.5,'px','文字の間隔。マイナスで詰める') +
         rangeIn('pLineH','行間',rep.lineH||1.25,0.5,4,0.05,'','行送り（フォントサイズ比）') +
         rangeIn('pRubyLS','ルビ間',rep.rubyLS||0,-10,50,0.5,'px','ルビの文字間隔') +
-        rangeIn('pRubyDy','ルビ位置',rep.rubyDy||0,-50,50,1,'px','ルビの上下位置（+で上へ）') +
-        propRow(`<label>揃え</label><select id="pAlign" style="flex:1" title="行の横方向の配置。均等割付は行末を折返幅に揃えます">` +
-          TEXT_ALIGNS.map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
+        rangeIn('pRubyDy','ルビ位置',rep.rubyDy||0,-50,50,1,'px', isVertical(rep)?'ルビの左右位置（+で右へ）':'ルビの上下位置（+で上へ）') +
+        propRow(`<label>揃え</label><select id="pAlign" style="flex:1" title="行の中での配置。均等割付は行末を折返しの長さに揃えます">` +
+          alignOptions(rep).map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
-        propRow(`<label>折返幅</label><input type="number" id="pBoxW" value="${fmt(rep.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">`) + `</div>`;
+        propRow(`<label>${isVertical(rep)?'折返高':'折返幅'}</label><input type="number" id="pBoxW" value="${fmt(rep.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">`) + `</div>`;
     }
   }
   // 整列・重ね順
@@ -2877,6 +3086,10 @@ function renderProps(){
     bindSel('pAlign', setAlign);
     bindSel('pFrameAlign', setAlign);
     bindSel('pFrameValign', v=> each(sh=> sh.valign = v));
+    // 組み方向。枠内文字は向きが変わると収まりも変わるので自動調整をやり直す
+    const setDir = v => eachFit(sh=>{ if(v==='v') sh.vertical = true; else delete sh.vertical; });
+    bindSel('pTextDir', setDir);
+    bindSel('pFrameDir', setDir);
     // 文字組みの数値はスライダーで即時反映（キャプション工房と共通仕様）
     const setLS   = v=> eachFit(sh=> sh.ls = v ? clamp(v,-20,100) : undefined);
     const setLineH= v=> eachFit(sh=> sh.lineH = clamp(v,0.5,4));
@@ -3370,12 +3583,13 @@ function textToOutline(textEl){
     [...textEl.children].forEach(tp=>{
       const cs = getComputedStyle(tp);
       const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      const rot = parseFloat(tp.getAttribute('rotate')) || 0;   // 縦組みで立てる字
       const str = tp.textContent;
       for(let i=0;i<str.length;i++){
         if(!/\S/.test(str[i])) continue;                 // 空白は字形が無い
         const p = tp.getStartPositionOfChar(i);
         glyphs.push({c:str[i], x:p.x, y:p.y, font, size:parseFloat(cs.fontSize)||16,
-                     fill:cs.fill, stroke:cs.stroke, sw:parseFloat(cs.strokeWidth)||0});
+                     rot, fill:cs.fill, stroke:cs.stroke, sw:parseFloat(cs.strokeWidth)||0});
       }
     });
     box = textEl.getBBox();
@@ -3417,8 +3631,12 @@ function textToOutline(textEl){
     glyphs.forEach(g=>{
       if(layer.kind==='fill' ? g.fill!==layer.paint : (g.stroke!==layer.paint || !(g.sw>0))) return;
       ctx.font = g.font;
-      if(layer.kind==='fill') ctx.fillText(g.c, g.x, g.y);
-      else { ctx.lineWidth = g.sw; ctx.strokeText(g.c, g.x, g.y); }
+      // 回す字は、SVGの rotate と同じく字の基準点まわりに回す
+      if(g.rot){ ctx.save(); ctx.translate(g.x, g.y); ctx.rotate(g.rot*Math.PI/180); }
+      const gx = g.rot ? 0 : g.x, gy = g.rot ? 0 : g.y;
+      if(layer.kind==='fill') ctx.fillText(g.c, gx, gy);
+      else { ctx.lineWidth = g.sw; ctx.strokeText(g.c, gx, gy); }
+      if(g.rot) ctx.restore();
     });
     ctx.restore();
     const px = ctx.getImageData(0,0,W,H).data;
