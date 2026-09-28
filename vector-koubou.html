@@ -124,6 +124,8 @@ input[type=range]{accent-color:var(--accent);}
   border-radius:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; background:var(--panel2);}
 .minibtns{display:flex; gap:4px; flex-wrap:wrap;}
 .minibtns button{padding:3px 6px; font-size:11px;}
+/* 今その段落に効いている揃え */
+.minibtns button.on{background:#3a2320; border-color:var(--accent); color:var(--accent-h);}
 #layersWrap{flex:1 1 auto; display:flex; flex-direction:column; min-height:0;}
 #layers{flex:1 1 auto; overflow-y:auto;}
 .layer{display:flex; align-items:center; gap:5px; padding:4px 8px; border-bottom:1px solid #23252b; cursor:pointer;}
@@ -681,16 +683,71 @@ function tokenizeRuby(para, base){
   return out;
 }
 /* 文字の配置。旧データは均等割付のON/OFF（justify）だけを持つので、それを引き継ぐ */
-const TEXT_ALIGNS = [['left','左揃え'],['center','中央揃え'],['right','右揃え'],['justify','均等割付']];
+/* 3つ目は段落ごとの揃えを選ぶ小さなボタンの表示（幅が狭いので短くする） */
+const TEXT_ALIGNS = [['left','左揃え','左'],['center','中央揃え','中'],['right','右揃え','右'],['justify','均等割付','均']];
 const TEXT_VALIGNS = [['top','上揃え'],['middle','中央'],['bottom','下揃え']];
 /* 縦組みでは行が上から下へ流れ、行は右から左へ進むので、同じ設定でも呼び名が変わる */
-const TEXT_ALIGNS_V = [['left','上揃え'],['center','中央揃え'],['right','下揃え'],['justify','均等割付']];
+const TEXT_ALIGNS_V = [['left','上揃え','上'],['center','中央揃え','中'],['right','下揃え','下'],['justify','均等割付','均']];
 const TEXT_VALIGNS_V = [['top','右揃え'],['middle','中央'],['bottom','左揃え']];
 function alignOptions(rep){ return isVertical(rep) ? TEXT_ALIGNS_V : TEXT_ALIGNS; }
 function valignOptions(rep){ return isVertical(rep) ? TEXT_VALIGNS_V : TEXT_VALIGNS; }
 function textAlign(s){
   if(s && s.align) return s.align;
   return (s && s.justify===false) ? 'left' : 'justify';
+}
+/* ===== 段落ごとの揃え =====
+   揃えは行の並べ方なので1文字だけでは決められない。選んだ文字を含む段落にまとめて効かせる。
+   指定は段落番号（0始まり）で持つ。段落の中の文字をいくら直しても番号は動かないので、
+   本文を書き換えても揃えが別の段落へずれない */
+function paraRanges(text){
+  const out = []; let base = 0;
+  // 段落末の改行まで含めるので、空の段落にもカーソルを置ける
+  String(text||'').split('\n').forEach(p=>{
+    out.push({s:base, e:base + p.length + 1});
+    base += p.length + 1;
+  });
+  return out;
+}
+function normalizeAligns(sh){
+  const n = String(sh.text||'').split('\n').length;
+  const valid = new Set(TEXT_ALIGNS.map(a=>a[0]));
+  const out = {};
+  Object.keys(sh.aligns||{}).forEach(k=>{
+    const i = +k, v = sh.aligns[k];
+    if(Number.isInteger(i) && i>=0 && i<n && valid.has(v)) out[i] = v;
+  });
+  if(Object.keys(out).length) sh.aligns = out; else delete sh.aligns;
+  return sh.aligns || null;
+}
+/* その段落に効く揃え。段落の指定が無ければテキスト全体の設定に従う */
+function paraAlign(s, i){ return (s && s.aligns && s.aligns[i]) || textAlign(s); }
+/* 文字位置からその段落の揃えを引く（本文欄のカーソル位置で使う） */
+function paraAlignAt(s, idx){
+  const paras = paraRanges(s && s.text);
+  let i = paras.findIndex(p=> idx >= p.s && idx < p.e);
+  if(i < 0) i = paras.length - 1;
+  return paraAlign(s, i);
+}
+/* 選んだ範囲にかかる段落すべての揃えを変える。align が null なら段落の指定を外す。
+   戻り値は対象になった段落数 */
+function applyParaAlign(sh, start, end, align){
+  const len = String(sh.text||'').length;
+  start = Math.max(0, Math.min(len, start|0));
+  end   = Math.max(start, Math.min(len, end|0));
+  const paras = paraRanges(sh.text);
+  // 選択が無い（カーソルを置いただけ）ときは、カーソルのある段落を対象にする
+  const touches = p => (start === end) ? (p.s <= start && start < p.e) : (p.s < end && p.e > start);
+  const next = Object.assign({}, sh.aligns);
+  let n = 0;
+  paras.forEach((p,i)=>{
+    if(!touches(p)) return;
+    if(align) next[i] = align; else delete next[i];
+    n++;
+  });
+  if(!n) return 0;
+  sh.aligns = next;
+  normalizeAligns(sh);
+  return n;
 }
 function textValign(s){ return (s && s.valign) || 'top'; }
 function isVertical(s){ return !!(s && s.vertical); }
@@ -870,6 +927,7 @@ function makeMeasurer(sh){
 }
 function layoutText(s){
   normalizeRuns(s);
+  normalizeAligns(s);
   const mz = makeMeasurer(s);
   const baseLS = +s.ls || 0;   // 文字間（ユーザー指定、px）
   const wSegs = segs => segs.reduce((a,g)=> a + mz.seg(g), 0);
@@ -881,25 +939,26 @@ function layoutText(s){
   };
   const inkW = segs => wSegs(inkSegs(segs));
   const out = [];
-  const mkLine = (segs, last)=>{
+  const mkLine = (segs, last, al)=>{
     const text = segs.map(g=>g.t).join('');
     const ink = inkSegs(segs), inkText = ink.map(g=>g.t).join('');
     let ls = baseLS;
     /* 行末揃え: 枠幅との差を文字と文字の間に均等配分（最大0.25em、不自然な広がりを防ぐ）。
        行末の外側には空きを作らないので、行の字面がちょうど枠幅に収まる */
-    if(s.boxW && textAlign(s)==='justify' && !last && inkText.length>1){
+    if(s.boxW && al==='justify' && !last && inkText.length>1){
       const w = wSegs(ink) - baseLS*inkText.length;         // 字幅の合計
       const gaps = inkText.length - 1;
       ls = baseLS + clamp((s.boxW - w - baseLS*gaps)/gaps, 0, s.size*0.25);
     }
     const ruby = []; let pos = 0;
     segs.forEach(g=>{ if(g.r) ruby.push({start:pos, len:g.t.length, r:g.r}); pos += g.t.length; });
-    return {text, ls: Math.round(ls*100)/100, ruby, segs,
+    return {text, ls: Math.round(ls*100)/100, ruby, segs, align: al,
             w: Math.max(0, wSegs(ink) - baseLS)};        // 字面の幅（行末の空白を除く）
   };
   let base = 0;
-  String(s.text).split('\n').forEach(para=>{
+  String(s.text).split('\n').forEach((para, pi)=>{
     const paraStart = base;
+    const al = paraAlign(s, pi);       // この段落に効く揃え
     base += para.length + 1;        // 改行ぶんを足して次の段落の開始位置にする
     const toks = [];
     tokenizeRuby(para, paraStart).forEach(tk=>{
@@ -907,7 +966,7 @@ function layoutText(s){
       let off = 0;
       segmentWords(tk.t).forEach(u=>{ toks.push({t:u, idx:tk.idx+off}); off += u.length; });
     });
-    if(!s.boxW || !para){ out.push(mkLine(toks, true)); return; }
+    if(!s.boxW || !para){ out.push(mkLine(toks, true, al)); return; }
     const before = out.length;
     let cur = [];
     /* 折り返した先の行頭には空白を置かない。ただし捨てずに前の行の末尾へ送る。
@@ -915,7 +974,7 @@ function layoutText(s){
     const wrapAt = tk=>{
       const lead = tk.r ? '' : (tk.t.match(/^\s+/) || [''])[0];
       if(lead) cur.push({t:lead, idx:tk.idx});
-      out.push(mkLine(cur, false));
+      out.push(mkLine(cur, false, al));
       const rest = tk.t.slice(lead.length);
       cur = rest ? [{t:rest, idx:tk.idx + lead.length, r:tk.r}] : [];
     };
@@ -930,14 +989,14 @@ function layoutText(s){
         k = kinsokuBreak(u, k);
         const restRaw = u.slice(k);
         const lead = (restRaw.match(/^\s+/) || [''])[0];
-        out.push(mkLine([{t:u.slice(0,k)+lead, idx:g.idx}], false));
+        out.push(mkLine([{t:u.slice(0,k)+lead, idx:g.idx}], false, al));
         const rest = restRaw.slice(lead.length);
         cur = rest ? [{t:rest, idx:g.idx + k + lead.length}] : [];
         if(!cur.length) break;
       }
     });
     // ちょうど行末で終わったときに空の行を足さない（そのぶん本文が高くなってしまう）
-    if(cur.length || out.length === before) out.push(mkLine(cur, true));
+    if(cur.length || out.length === before) out.push(mkLine(cur, true, al));
   });
   return out;
 }
@@ -952,7 +1011,6 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
   const attrs = mz.attrs;
   const baseLS = +spec.ls || 0;
   const rows = lines || layoutText(spec);
-  const align = textAlign(spec);
   t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
   const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
                         : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
@@ -962,9 +1020,11 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
   const lineW = ln => (ln.w != null ? ln.w
                       : ln.segs ? Math.max(0, ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS) : 0);
   const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
+  // 揃えは段落ごとに決まる（選んだ段落だけ変えられる）
   const offsetOf = ln=>{
-    if(align==='center') return Math.max(0, (refW - lineW(ln))/2);
-    if(align==='right')  return Math.max(0, refW - lineW(ln));
+    const al = ln.align || textAlign(spec);
+    if(al==='center') return Math.max(0, (refW - lineW(ln))/2);
+    if(al==='right')  return Math.max(0, refW - lineW(ln));
     return 0;
   };
   const lineChars = ln=>{
@@ -1129,7 +1189,6 @@ function buildTextLines(t, spec, x, y0, lines){
   const attrs = mz.attrs;                 // 部分書式がある場合のみ非null
   const baseLS = +spec.ls || 0;
   const rows = lines || layoutText(spec);
-  const align = textAlign(spec);
   /* 入力した空白をそのまま描く。これが無いと行頭・行末の空白が表示側で詰められ、
      空白を数えている折返し計算や寄せ量とズレてしまう */
   t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
@@ -1140,9 +1199,11 @@ function buildTextLines(t, spec, x, y0, lines){
   const lineW = ln => (ln.w != null ? ln.w
                       : ln.segs ? Math.max(0, ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS) : 0);
   const refW = spec.boxW || Math.max(0, ...rows.map(lineW));
+  // 揃えは段落ごとに決まる（選んだ段落だけ変えられる）
   const offsetOf = ln=>{
-    if(align==='center') return Math.max(0, (refW - lineW(ln))/2);
-    if(align==='right')  return Math.max(0, refW - lineW(ln));
+    const al = ln.align || textAlign(spec);
+    if(al==='center') return Math.max(0, (refW - lineW(ln))/2);
+    if(al==='right')  return Math.max(0, refW - lineW(ln));
     return 0;            // left と justify は行頭から
   };
   // 行を1文字ずつに展開する（ルビの位置決めと、文字ごとの位置指定に使う）
@@ -1307,7 +1368,8 @@ function isFrameShape(s){ return s.type==='rect' || s.type==='ellipse' || s.type
 function frameTextSpec(s, boxW){
   return {text:s.text, size:s.size||16, font:s.font||'sans-serif', bold:s.bold, weight:s.weight,
     boxW, align:textAlign(s), justify:s.justify, ls:s.ls, lineH:s.lineH,
-    rubyLS:s.rubyLS, rubyDy:s.rubyDy, vertical:isVertical(s), tcy:s.tcy, fatten:s.fatten};
+    rubyLS:s.rubyLS, rubyDy:s.rubyDy, vertical:isVertical(s), tcy:s.tcy, fatten:s.fatten,
+    aligns:s.aligns};
 }
 /* 枠内で文字を組むときの行長（横組みは幅、縦組みは高さ） */
 function frameLineLen(s, box){ return isVertical(s) ? box.h : box.w; }
@@ -2735,6 +2797,38 @@ function fontSelectHTML(id, one){
   }
   return html + `</select>`;
 }
+/* 選んだ段落だけの揃え。揃えは行の並べ方なので、文字ではなく段落の単位で効く */
+function paraAlignHTML(id, rep){
+  return propRow(`<label>段落の揃え</label><span class="minibtns" id="${id}"` +
+    ` title="本文欄で選んだ文字を含む段落だけ揃えを変えます。選ばずにカーソルを置いただけなら、その段落に効きます">` +
+    alignOptions(rep).map(([v,l,short])=>`<button data-pa="${v}" title="${l}">${short}</button>`).join('') +
+    `<button data-pa="" title="段落の指定を外し、テキスト全体の揃えに戻します">解除</button></span>` +
+    `<span id="${id}Msg" style="font-size:10px;color:var(--muted)"></span>`);
+}
+function bindParaAlign(one, taId, id){
+  const ta = $(taId), wrap = $(id), msg = $(id+'Msg');
+  if(!ta || !wrap) return;
+  // 今カーソルがある段落の揃えを光らせる
+  const mark = ()=>{
+    const eff = paraAlignAt(one, ta.selectionStart|0);
+    wrap.querySelectorAll('[data-pa]').forEach(b=> b.classList.toggle('on', b.dataset.pa === eff));
+  };
+  // パネルは作り直されるので、監視は本文欄そのものに付ける（documentに足すと溜まる）
+  ['keyup','click','focus','select'].forEach(ev=> ta.addEventListener(ev, mark));
+  wrap.querySelectorAll('[data-pa]').forEach(b=> b.onclick = ()=>{
+    const r = {s: ta.selectionStart|0, e: ta.selectionEnd|0};
+    pushHistory();
+    const n = applyParaAlign(one, r.s, r.e, b.dataset.pa || null);
+    if(isFrameShape(one)) autoFitFrame(one);
+    render();
+    // 再描画でパネルが作り直されるので、選択範囲を戻して続けて操作できるようにする
+    const t2 = $(taId);
+    if(t2){ t2.focus(); t2.setSelectionRange(r.s, r.e); }
+    const m2 = $(id+'Msg');
+    if(m2) m2.textContent = n ? `${n}段落に適用` : '';
+  });
+  mark();
+}
 /* 一部の文字だけの書式。上の本文欄で文字を選んでから適用する */
 function partFormatHTML(one){
   return `<div class="pgroup">` +
@@ -3105,6 +3199,7 @@ function renderProps(){
         propRow(`<label>揃え</label><select id="pFrameAlign" style="flex:1" title="行の中での配置。均等割付は行末を枠に揃えます">` +
           alignOptions(rep).map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
+        (one ? paraAlignHTML('pFrameParaAlign', rep) : '') +
         propRow(`<label>${isVertical(rep)?'行の位置':'縦位置'}</label><select id="pFrameValign" style="flex:1" title="枠の中で、行が進む向きの配置。枠の自動調整がオフのときに効きます">` +
           valignOptions(rep).map(([v,l])=>`<option value="${v}" ${textValign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
@@ -3145,6 +3240,7 @@ function renderProps(){
         propRow(`<label>揃え</label><select id="pAlign" style="flex:1" title="行の中での配置。均等割付は行末を折返しの長さに揃えます">` +
           alignOptions(rep).map(([v,l])=>`<option value="${v}" ${textAlign(rep)===v?'selected':''}>${l}</option>`).join('') +
           `</select>`) +
+        (one ? paraAlignHTML('pParaAlign', rep) : '') +
         propRow(`<label>${isVertical(rep)?'折返高':'折返幅'}</label><input type="number" id="pBoxW" value="${fmt(rep.boxW||0)}" min="0" max="${Math.round(DOC_MAX_PX)}" step="1" title="0で折り返しなし。単語を切らずに自動改行します">`) + `</div>`;
     }
   }
@@ -3218,6 +3314,8 @@ function renderProps(){
 
     bindAutoGrow('pText'); bindAutoGrow('pFrameText');
     if(one) bindPartFormat(one);
+    if(one) bindParaAlign(one, 'pText', 'pParaAlign');
+    if(one) bindParaAlign(one, 'pFrameText', 'pFrameParaAlign');
     initFontPreview(rep);
     updateFontMissingWarn(rep);
     bindFontCheck(rep);
