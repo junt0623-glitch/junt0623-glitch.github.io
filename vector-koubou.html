@@ -700,6 +700,21 @@ function isVertical(s){ return !!(s && s.vertical); }
 function textScaleX(s){ return clamp(+((s && s.scaleX) || 1) || 1, 0.1, 4); }
 function textScaleY(s){ return clamp(+((s && s.scaleY) || 1) || 1, 0.1, 4); }
 function hasTextScale(s){ return textScaleX(s) !== 1 || textScaleY(s) !== 1; }
+/* ---- 太らせ ----
+   書体が持つ太さの段階（多くの和文書体は標準と太字の2段だけ）に縛られず、
+   どの書体でも連続して太くできるようにする。字の輪郭を塗りと同じ色で縁取り、
+   それを塗りの下に敷いて太らせる。縦横比を変えた字にも同じように効く */
+function textFatten(s){ return clamp(+((s && s.fatten) || 0) || 0, 0, 0.1); }
+function applyFatten(el, size, fatten, paint, baseStroke, baseWidth){
+  if(!(fatten > 0)) return;
+  const grow = fatten * (size || 16) * 2;        // 輪郭の外側へ fatten×字の大きさ ぶん太る
+  const on = baseStroke && baseStroke !== 'none' && baseWidth > 0;
+  el.setAttribute('stroke', on ? baseStroke : paint);
+  el.setAttribute('stroke-width', fmtT((on ? +baseWidth : 0) + grow));
+  el.setAttribute('stroke-linejoin','round');
+  el.setAttribute('stroke-linecap','round');
+  el.setAttribute('paint-order','stroke fill');  // 縁取りを塗りの下へ
+}
 // 組み方向に沿った伸縮（行の長さに効く）と、行が進む向きの伸縮
 function inlineScale(s){ return isVertical(s) ? textScaleY(s) : textScaleX(s); }
 function blockScale(s){ return isVertical(s) ? textScaleX(s) : textScaleY(s); }
@@ -962,6 +977,13 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
     ys[cs.length] = p;
     return ys;
   };
+  /* 部分的に色を変えた字の太らせ。縁取りの色を塗りに合わせる
+     （枠や文字そのものに線があるときは、その線の色をそのまま使う） */
+  const fattenStroke = (tp, paint)=>{
+    if(!(textFatten(spec) > 0)) return;
+    const own = spec.stroke && spec.stroke !== 'none' && spec.strokeWidth > 0;
+    if(!own) tp.setAttribute('stroke', paint);
+  };
   // ます目の中で基準線が来る高さの割合（おおむね0.88）
   const baseRatio = (font, em)=>{
     const vm = fontVMetrics(font, em);
@@ -1054,7 +1076,7 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
         tp.setAttribute('font-weight', String(pc.a.weight));
-        if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
+        if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
       }
       tp.textContent = pc.t;
       t.appendChild(tp);
@@ -1140,7 +1162,13 @@ function buildTextLines(t, spec, x, y0, lines){
     xs[cs.length] = cx;
     return xs;
   };
-  /* ルビの付く範囲（モノルビはスペース区切りで基底1字ずつ） */
+  /* 部分的に色を変えた字の太らせ。縁取りの色を塗りに合わせる
+     （枠や文字そのものに線があるときは、その線の色をそのまま使う） */
+  const fattenStroke = (tp, paint)=>{
+    if(!(textFatten(spec) > 0)) return;
+    const own = spec.stroke && spec.stroke !== 'none' && spec.strokeWidth > 0;
+    if(!own) tp.setAttribute('stroke', paint);
+  };
   const rubyTargets = rb=>{
     const groups = rb.r.split(/[ 　]+/).filter(g=>g);
     const targets = [];
@@ -1204,7 +1232,7 @@ function buildTextLines(t, spec, x, y0, lines){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
         tp.setAttribute('font-weight', String(pc.a.weight));
-        if(pc.a.fill) tp.setAttribute('fill', pc.a.fill);
+        if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
       }
       tp.textContent = pc.t;
       t.appendChild(tp);
@@ -1274,7 +1302,7 @@ function frameTextSpec(s, boxW){
 /* 枠内で文字を組むときの行長（横組みは幅、縦組みは高さ） */
 function frameLineLen(s, box){ return isVertical(s) ? box.h : box.w; }
 /* 字形のインクが送り幅から外へ出る分の許容量 */
-function frameInkPad(s){ return Math.ceil((s.size||16)*0.12); }
+function frameInkPad(s){ return Math.ceil((s.size||16)*(0.12 + textFatten(s))); }
 /* 1行目にルビがある分だけ、クリップで欠けないよう先頭行を下げる量 */
 function frameRubyPad(s, lines){
   const size = s.size || 16;
@@ -1372,6 +1400,7 @@ function frameTextEl(s){
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
   t.setAttribute('font-weight', String(textWeight(fake)));
   t.setAttribute('fill', s.textFill || '#111111');
+  applyFatten(t, size, textFatten(s), s.textFill || '#111111', 'none', 0);
   buildTextLines(t, fake, x, y, lines);
   const sc = textScaleTransform(s, x, y);
   if(!sc){ t.setAttribute('clip-path', `url(#clip${s.id})`); return t; }
@@ -1447,6 +1476,10 @@ function shapeEl(s, live){
       if(s.arrowS) el.setAttribute('marker-start', `url(#arw${s.id})`);
       if(s.arrowE) el.setAttribute('marker-end', `url(#arw${s.id})`);
     }
+  }
+  if(s.type==='text'){
+    applyFatten(el, s.size, textFatten(s),
+      typeof s.fill==='object' ? `url(#${gradientId(s)})` : s.fill, s.stroke, s.strokeWidth);
   }
   const hasFrameText = isFrameShape(s) && s.text;
   let textEl = null, result = el;
@@ -3036,6 +3069,8 @@ function renderProps(){
     const ratioRows = (idx, idy, rep)=>
       rangeIn(idx,'横比率',Math.round(textScaleX(rep)*100),10,400,1,'%','文字の横方向の比率。100%で等倍、小さくすると細い字（長体）') +
       rangeIn(idy,'縦比率',Math.round(textScaleY(rep)*100),10,400,1,'%','文字の縦方向の比率。100%で等倍、小さくすると平たい字（平体）');
+    const fattenRow = (id, rep)=> rangeIn(id,'太らせ',Math.round(textFatten(rep)*1000)/10,0,10,0.25,'%',
+      '字の輪郭を外側へ太らせます。書体が持つ太さの段階に縛られず連続して調整でき、縦横比を変えた文字にも効きます');
     const dirRow = (id, rep)=> propRow(`<label>組み方向</label><select id="${id}" style="flex:1" title="縦書きにすると、行は上から下へ流れ、行は右から左へ進みます">` +
       `<option value="h" ${isVertical(rep)?'':'selected'}>横書き</option>` +
       `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`) +
@@ -3063,6 +3098,7 @@ function renderProps(){
         propRow(`<label>書体</label>${fontSelectHTML('pFrameFont', rep)}` +
           ``) +
         rangeIn('pFrameWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
+        fattenRow('pFrameFatten', rep) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3081,6 +3117,7 @@ function renderProps(){
         propRow(`<label>書体</label>${fontSelectHTML('pFont', rep)}` +
           ``) +
         rangeIn('pWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
+        fattenRow('pFatten', rep) +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3215,6 +3252,12 @@ function renderProps(){
       const r = clamp(v/100, 0.1, 4);
       if(Math.abs(r-1) < 1e-6) delete sh[key]; else sh[key] = r;
     });
+    const setFatten = v => eachFit(sh=>{
+      const f = clamp(v/100, 0, 0.1);
+      if(f <= 0) delete sh.fatten; else sh.fatten = f;
+    });
+    bindRange('pFatten', setFatten, '%', 1);
+    bindRange('pFrameFatten', setFatten, '%', 1);
     bindRange('pScaleX', v=> setRatio('scaleX', v), '%');
     bindRange('pScaleY', v=> setRatio('scaleY', v), '%');
     bindRange('pFrameScaleX', v=> setRatio('scaleX', v), '%');
@@ -3710,8 +3753,10 @@ function textToOutline(textEl){
   holder.appendChild(textEl);
   // 実際に組まれた位置と書式を1文字ずつ読む（画面に出ているものとそのまま同じ）
   const glyphs = [];
-  let box = null, failed = false;
+  let box = null, failed = false, strokeFirst = false;
   try{
+    // 太らせの縁取りは塗りの下。輪郭を起こすときも同じ順で重ねる
+    strokeFirst = /^stroke/.test(getComputedStyle(textEl).paintOrder || '');
     [...textEl.children].forEach(tp=>{
       const cs = getComputedStyle(tp);
       const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
@@ -3755,8 +3800,9 @@ function textToOutline(textEl){
     if(!paint || paint==='none' || /rgba\(\s*0,\s*0,\s*0,\s*0\s*\)/.test(paint)) return;
     if(!layers.some(l=> l.paint===paint && l.kind===kind)) layers.push({paint, kind});
   };
-  glyphs.forEach(g=> addLayer(g.fill, 'fill'));
-  glyphs.forEach(g=>{ if(g.sw > 0) addLayer(g.stroke, 'stroke'); });
+  const addFills = ()=> glyphs.forEach(g=> addLayer(g.fill, 'fill'));
+  const addStrokes = ()=> glyphs.forEach(g=>{ if(g.sw > 0) addLayer(g.stroke, 'stroke'); });
+  if(strokeFirst){ addStrokes(); addFills(); } else { addFills(); addStrokes(); }
 
   const out = [];
   const cv = document.createElement('canvas');
