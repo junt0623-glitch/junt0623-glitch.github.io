@@ -778,15 +778,19 @@ const FATTEN_JOINS = [['round','隅丸'],['miter','隅角']];
 function fattenJoin(s){ return (s && s.fattenJoin === 'miter') ? 'miter' : 'round'; }
 /* ---- ドロップシャドウ ----
    文字の後ろに、ぼかした影を落とす。角度は影の向き（0°＝右、90°＝下）。
-   影の向きと大きさは、文字を回しても伸縮しても変わらないように、変形の外側から掛ける
-   （光の向きは紙に対して一定、という見え方にそろえる） */
-const SHADOW_DEF = {dist:5, angle:45, blur:5, color:'#000000', alpha:0.45};
+   影は「文字の写し」を影の色で塗ってぼかしたもの。写しをずらして拡げれば、
+   文字より大きい影も落とせる（大きさは文字に対する比率、最大200%）。
+   影の向き・大きさ・ぼかしは、文字を回しても伸縮しても変わらないように、
+   文字の変形の外側で決める（光の向きは紙に対して一定、という見え方にそろえる） */
+const SHADOW_DEF = {dist:5, angle:45, blur:5, scale:1, color:'#000000', alpha:0.45};
+const SHADOW_SCALE_MAX = 2;                  // 影の大きさの上限（文字の200%）
 function textShadow(s){
   const d = s && s.shadow;
   if(!d) return null;
   return {dist:  clamp(+d.dist || 0, 0, 200),
           angle: ((+d.angle || 0) % 360 + 360) % 360,
           blur:  clamp(+d.blur || 0, 0, 100),
+          scale: clamp(d.scale == null ? 1 : +d.scale, 0.5, SHADOW_SCALE_MAX),
           color: d.color || '#000000',
           alpha: clamp(d.alpha == null ? 1 : +d.alpha, 0, 1)};
 }
@@ -797,27 +801,70 @@ function shadowOffset(d){
   const a = deg2rad(d.angle);
   return {dx: d.dist*Math.cos(a), dy: d.dist*Math.sin(a)};
 }
+/* 影の写しに掛ける変形。文字の中心を動かさずに拡げてから、指定の向きへずらす */
+function shadowTransform(s){
+  const d = textShadow(s); if(!d) return '';
+  const {dx, dy} = shadowOffset(d);
+  const k = d.scale;
+  const out = [];
+  if(dx || dy) out.push(`translate(${fmtT(dx)} ${fmtT(dy)})`);
+  if(k !== 1){
+    const b = renderBBox(s);
+    const cx = b.x + b.w/2, cy = b.y + b.h/2;
+    out.push(`translate(${fmtT(cx)} ${fmtT(cy)}) scale(${fmtT(k)}) translate(${fmtT(-cx)} ${fmtT(-cy)})`);
+  }
+  return out.join(' ');
+}
+/* 影が届く範囲。ずらして拡げた写しと元の文字の両方を含め、ぼかしのぶんだけ広げる */
 function shadowDefString(s){
   const d = textShadow(s); if(!d) return '';
   const {dx, dy} = shadowOffset(d);
   const sd = d.blur/2;                       // ぼかし幅の半分を標準偏差に（CSSの影と同じ目安）
-  const b = renderBBox(s);
-  // ぼかしと影のぶんだけ描画範囲を広げておかないと、影の外側が切れる
-  const pad = d.dist + sd*3 + (s.size||16)*0.6 + (+s.strokeWidth||0) + 4;
+  const b = renderBBox(s), k = d.scale;
+  const cx = b.x + b.w/2, cy = b.y + b.h/2;
+  const g = {x: cx + (b.x-cx)*k + dx, y: cy + (b.y-cy)*k + dy, w: b.w*k, h: b.h*k};
+  const x1 = Math.min(b.x, g.x), y1 = Math.min(b.y, g.y);
+  const x2 = Math.max(b.x+b.w, g.x+g.w), y2 = Math.max(b.y+b.h, g.y+g.h);
+  // 字形のインクは送り幅より少し外へ出るので、その分も見込む
+  const pad = sd*3 + (s.size||16)*0.6*k + (+s.strokeWidth||0)*k + 4;
   return `<filter id="${shadowId(s)}" filterUnits="userSpaceOnUse" ` +
-    `x="${fmt(b.x-pad)}" y="${fmt(b.y-pad)}" width="${fmt(b.w+pad*2)}" height="${fmt(b.h+pad*2)}">` +
+    `x="${fmt(x1-pad)}" y="${fmt(y1-pad)}" width="${fmt(x2-x1+pad*2)}" height="${fmt(y2-y1+pad*2)}">` +
     `<feGaussianBlur in="SourceAlpha" stdDeviation="${fmtT(sd)}" result="shb"/>` +
-    `<feOffset in="shb" dx="${fmtT(dx)}" dy="${fmtT(dy)}" result="sho"/>` +
     `<feFlood flood-color="${esc(d.color)}" flood-opacity="${fmtT(d.alpha)}" result="shc"/>` +
-    `<feComposite in="shc" in2="sho" operator="in" result="shs"/>` +
-    `<feMerge><feMergeNode in="shs"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+    `<feComposite in="shc" in2="shb" operator="in"/></filter>`;
 }
-/* 影は文字の変形の外側から掛けたいので、変形済みの要素をそのまま包む */
+/* 影つきの文字を組み立てる。文字の写しを影として敷き、その上に本物を置く。
+   ぼかしは紙の上の寸法どおりに効かせたいので、写しを拡げる変形は filter の内側に置く */
 function wrapShadow(el, s){
-  const g = document.createElementNS('http://www.w3.org/2000/svg','g');
-  g.setAttribute('filter', `url(#${shadowId(s)})`);
+  const NS = 'http://www.w3.org/2000/svg';
+  const ghost = el.cloneNode(true);
+  // 写しは印を持たない（選択や当たり判定は本物だけが受け持つ）
+  ghost.removeAttribute('id'); ghost.removeAttribute('data-id');
+  ghost.querySelectorAll('*').forEach(k=>{ k.removeAttribute('id'); k.removeAttribute('data-id'); });
+  const move = document.createElementNS(NS,'g');
+  move.dataset.shadow = s.id;                 // 組み上がった外形で置き直すための目印
+  const tf = shadowTransform(s);
+  if(tf) move.setAttribute('transform', tf);
+  move.appendChild(ghost);
+  const shade = document.createElementNS(NS,'g');
+  shade.setAttribute('filter', `url(#${shadowId(s)})`);
+  shade.setAttribute('pointer-events','none');   // 影は掴めない（本物の文字だけを掴む）
+  shade.appendChild(move);
+  const g = document.createElementNS(NS,'g');
+  g.appendChild(shade);
   g.appendChild(el);
   return g;
+}
+/* 影の位置と大きさは組み上がった文字の外形から決まる。図形を置いたあとにあてはめ直す
+   （本文を直した直後でも、前の外形のままずれたりしない） */
+function applyShadowGeometry(){
+  state.shapes.forEach(s=>{
+    if(!hasShadow(s)) return;
+    const g = shapesLayer.querySelector(`[data-shadow="${s.id}"]`);
+    if(!g) return;
+    const tf = shadowTransform(s);
+    if(tf) g.setAttribute('transform', tf); else g.removeAttribute('transform');
+  });
 }
 function applyFatten(el, size, fatten, paint, baseStroke, baseWidth, join){
   if(!(fatten > 0)) return;
@@ -1823,7 +1870,8 @@ function render(skipProps){
   normalizeOrder();
   shapesLayer.innerHTML = '';
   state.shapes.forEach(s=>{ if(shapeVisible(s)) shapesLayer.appendChild(shapeEl(s,true)); });
-  // 影の描画範囲は組み上がった文字の外形から決めるので、図形を置いたあとで作る
+  // 影は組み上がった文字の外形を基準にするので、図形を置いたあとで位置と範囲を決める
+  applyShadowGeometry();
   updateGradientDefs();
 
   renderHandles();
@@ -3275,6 +3323,8 @@ function renderProps(){
         rangeIn(id+'Dist','影の距離',d.dist,0,100,0.5,'px','文字から影をずらす量。0で真後ろに重なります') +
         rangeIn(id+'Angle','影の向き',d.angle,0,359,1,'°','影を落とす向き。0°で右、90°で下、180°で左') +
         rangeIn(id+'Blur','影のぼかし',d.blur,0,60,0.5,'px','影のふちのぼかし幅。0でくっきりした影になります') +
+        rangeIn(id+'Scale','影の大きさ',Math.round(d.scale*100),50,SHADOW_SCALE_MAX*100,1,'%',
+          '文字に対する影の大きさ。100%で文字と同じ、200%で文字の倍の大きさになります（中心はそのまま）') +
         rangeIn(id+'Alpha','影の濃さ',Math.round(d.alpha*100),0,100,1,'%','影の濃さ。0で見えなくなります') +
         propRow(`<label>影の色</label><input type="color" id="${id}Color" value="${esc(d.color)}">`);
     };
@@ -3492,6 +3542,7 @@ function renderProps(){
       bindRange(id+'Dist',  v=> setShadow('dist', clamp(v,0,200)), 'px');
       bindRange(id+'Angle', v=> setShadow('angle', ((v%360)+360)%360), '°', 0);
       bindRange(id+'Blur',  v=> setShadow('blur', clamp(v,0,100)), 'px');
+      bindRange(id+'Scale', v=> setShadow('scale', clamp(v/100, 0.5, SHADOW_SCALE_MAX)), '%', 0);
       bindRange(id+'Alpha', v=> setShadow('alpha', clamp(v/100,0,1)), '%', 0);
       const col = $(id+'Color');
       if(col){
