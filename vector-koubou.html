@@ -776,6 +776,49 @@ function fattenGap(s){ return textFatten(s) * ((s && s.size) || 16) * 2; }
 /* 太らせたときの角の作り。隅丸は角が丸まり、隅角は元の字の角ばりを残す */
 const FATTEN_JOINS = [['round','隅丸'],['miter','隅角']];
 function fattenJoin(s){ return (s && s.fattenJoin === 'miter') ? 'miter' : 'round'; }
+/* ---- ドロップシャドウ ----
+   文字の後ろに、ぼかした影を落とす。角度は影の向き（0°＝右、90°＝下）。
+   影の向きと大きさは、文字を回しても伸縮しても変わらないように、変形の外側から掛ける
+   （光の向きは紙に対して一定、という見え方にそろえる） */
+const SHADOW_DEF = {dist:5, angle:45, blur:5, color:'#000000', alpha:0.45};
+function textShadow(s){
+  const d = s && s.shadow;
+  if(!d) return null;
+  return {dist:  clamp(+d.dist || 0, 0, 200),
+          angle: ((+d.angle || 0) % 360 + 360) % 360,
+          blur:  clamp(+d.blur || 0, 0, 100),
+          color: d.color || '#000000',
+          alpha: clamp(d.alpha == null ? 1 : +d.alpha, 0, 1)};
+}
+/* 影を落とせるのは文字だけ（枠の中の文字は文字にだけ掛け、枠そのものには掛けない） */
+function hasShadow(s){ return !!(s && (s.type==='text' || (isFrameShape(s) && s.text)) && textShadow(s)); }
+function shadowId(s){ return 'shadow'+s.id; }
+function shadowOffset(d){
+  const a = deg2rad(d.angle);
+  return {dx: d.dist*Math.cos(a), dy: d.dist*Math.sin(a)};
+}
+function shadowDefString(s){
+  const d = textShadow(s); if(!d) return '';
+  const {dx, dy} = shadowOffset(d);
+  const sd = d.blur/2;                       // ぼかし幅の半分を標準偏差に（CSSの影と同じ目安）
+  const b = renderBBox(s);
+  // ぼかしと影のぶんだけ描画範囲を広げておかないと、影の外側が切れる
+  const pad = d.dist + sd*3 + (s.size||16)*0.6 + (+s.strokeWidth||0) + 4;
+  return `<filter id="${shadowId(s)}" filterUnits="userSpaceOnUse" ` +
+    `x="${fmt(b.x-pad)}" y="${fmt(b.y-pad)}" width="${fmt(b.w+pad*2)}" height="${fmt(b.h+pad*2)}">` +
+    `<feGaussianBlur in="SourceAlpha" stdDeviation="${fmtT(sd)}" result="shb"/>` +
+    `<feOffset in="shb" dx="${fmtT(dx)}" dy="${fmtT(dy)}" result="sho"/>` +
+    `<feFlood flood-color="${esc(d.color)}" flood-opacity="${fmtT(d.alpha)}" result="shc"/>` +
+    `<feComposite in="shc" in2="sho" operator="in" result="shs"/>` +
+    `<feMerge><feMergeNode in="shs"/><feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+}
+/* 影は文字の変形の外側から掛けたいので、変形済みの要素をそのまま包む */
+function wrapShadow(el, s){
+  const g = document.createElementNS('http://www.w3.org/2000/svg','g');
+  g.setAttribute('filter', `url(#${shadowId(s)})`);
+  g.appendChild(el);
+  return g;
+}
 function applyFatten(el, size, fatten, paint, baseStroke, baseWidth, join){
   if(!(fatten > 0)) return;
   const grow = fatten * (size || 16) * 2;        // 輪郭の外側へ fatten×字の大きさ ぶん太る
@@ -1355,6 +1398,7 @@ function dynamicDefStrings(){
   const out = [];
   state.shapes.forEach(s=>{
     if(s.fill && typeof s.fill==='object') out.push(gradientDefString(s));
+    if(hasShadow(s)) out.push(shadowDefString(s));
     if((s.arrowS||s.arrowE) && (s.type==='line'||(s.type==='path'&&!s.closed))) out.push(markerDefString(s));
     if(isFrameShape(s) && s.text){
       // 均等割付の行は枠幅ぴったりまで伸びる。字形のインクは送り幅よりわずかに外へ出るため、
@@ -1569,7 +1613,8 @@ function shapeEl(s, live){
     textEl = frameTextEl(s);
     result = document.createElementNS(NS,'g');
     result.appendChild(el);
-    result.appendChild(textEl);
+    // 影は枠内の文字にだけ落とす（枠そのものには掛けない）
+    result.appendChild(hasShadow(s) ? wrapShadow(textEl, s) : textEl);
   }
   if(s.opacity < 1) result.setAttribute('opacity', s.opacity);
   const tf = [];
@@ -1586,6 +1631,9 @@ function shapeEl(s, live){
     if(hasFrameText){ el.dataset.id = s.id; textEl.dataset.id = s.id; }
     if(shapeLocked(s)) result.setAttribute('pointer-events','none');
   }
+  /* テキスト図形は図形そのものが文字。影は回転・伸縮の外側から掛けるので、
+     id を付け替えないよう、印（id・data-id）は中の要素に残したまま外側で包む */
+  if(s.type==='text' && hasShadow(s)) result = wrapShadow(result, s);
   return result;
 }
 
@@ -1773,9 +1821,10 @@ function render(skipProps){
 
   ensureLayers();
   normalizeOrder();
-  updateGradientDefs();
   shapesLayer.innerHTML = '';
   state.shapes.forEach(s=>{ if(shapeVisible(s)) shapesLayer.appendChild(shapeEl(s,true)); });
+  // 影の描画範囲は組み上がった文字の外形から決めるので、図形を置いたあとで作る
+  updateGradientDefs();
 
   renderHandles();
   renderLayers();
@@ -3216,6 +3265,19 @@ function renderProps(){
       propRow(`<label>太らせの角</label><select id="${id}Join" style="flex:1" title="太らせたときの角の作り。隅丸は角が丸くなり、隅角は元の字の角ばりを残します（太らせが0%のときは効きません）">` +
         FATTEN_JOINS.map(([v,l])=>`<option value="${v}" ${fattenJoin(rep)===v?'selected':''}>${l}</option>`).join('') +
         `</select>`);
+    /* ドロップシャドウ。入りにしたときだけ細かい調整欄を出す */
+    const shadowRows = (id, rep, label)=>{
+      const d = textShadow(rep);
+      let h = propRow(`<label class="toggle" title="文字の後ろに影を落とします。影の向きと大きさは、文字を回しても伸縮しても変わりません">` +
+        `<input type="checkbox" id="${id}On" ${d?'checked':''}>${label}</label>`);
+      if(!d) return h;
+      return h +
+        rangeIn(id+'Dist','影の距離',d.dist,0,100,0.5,'px','文字から影をずらす量。0で真後ろに重なります') +
+        rangeIn(id+'Angle','影の向き',d.angle,0,359,1,'°','影を落とす向き。0°で右、90°で下、180°で左') +
+        rangeIn(id+'Blur','影のぼかし',d.blur,0,60,0.5,'px','影のふちのぼかし幅。0でくっきりした影になります') +
+        rangeIn(id+'Alpha','影の濃さ',Math.round(d.alpha*100),0,100,1,'%','影の濃さ。0で見えなくなります') +
+        propRow(`<label>影の色</label><input type="color" id="${id}Color" value="${esc(d.color)}">`);
+    };
     const dirRow = (id, rep)=> propRow(`<label>組み方向</label><select id="${id}" style="flex:1" title="縦書きにすると、行は上から下へ流れ、行は右から左へ進みます">` +
       `<option value="h" ${isVertical(rep)?'':'selected'}>横書き</option>` +
       `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`) +
@@ -3245,6 +3307,7 @@ function renderProps(){
           ``) +
         rangeIn('pFrameWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         fattenRow('pFrameFatten', rep) +
+        shadowRows('pFrameShadow', rep, '枠内文字に影を付ける') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3264,6 +3327,7 @@ function renderProps(){
           ``) +
         rangeIn('pWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         fattenRow('pFatten', rep) +
+        shadowRows('pShadow', rep, '影を付ける') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3413,6 +3477,33 @@ function renderProps(){
     });
     bindSel('pFattenJoin', setFattenJoin);
     bindSel('pFrameFattenJoin', setFattenJoin);
+    /* ドロップシャドウ。入り切りは欄の出し入れがあるので描き直し、値は動かしながら反映する */
+    const setShadow = (key, v)=> each(sh=>{
+      sh.shadow = Object.assign({}, SHADOW_DEF, sh.shadow||{}, {[key]: v});
+    });
+    ['pShadow','pFrameShadow'].forEach(id=>{
+      const on = $(id+'On');
+      if(on) on.onchange = ()=>{
+        startEdit();
+        each(sh=>{ if(on.checked) sh.shadow = Object.assign({}, SHADOW_DEF, sh.shadow||{});
+                   else delete sh.shadow; });
+        render();
+      };
+      bindRange(id+'Dist',  v=> setShadow('dist', clamp(v,0,200)), 'px');
+      bindRange(id+'Angle', v=> setShadow('angle', ((v%360)+360)%360), '°', 0);
+      bindRange(id+'Blur',  v=> setShadow('blur', clamp(v,0,100)), 'px');
+      bindRange(id+'Alpha', v=> setShadow('alpha', clamp(v/100,0,1)), '%', 0);
+      const col = $(id+'Color');
+      if(col){
+        // 色を選んでいる間の履歴は1件だけ（スライダーと同じ扱い）
+        let dirty = false;
+        col.oninput = ()=>{
+          if(!dirty){ startEdit(); dirty = true; }
+          setShadow('color', col.value); render(true);
+        };
+        col.onchange = ()=>{ dirty = false; };
+      }
+    });
     bindRange('pScaleX', v=> setRatio('scaleX', v), '%');
     bindRange('pScaleY', v=> setRatio('scaleY', v), '%');
     bindRange('pFrameScaleX', v=> setRatio('scaleX', v), '%');
