@@ -604,9 +604,13 @@ function segmentWords(text){
   return out;
 }
 /* ===== 部分書式（ラン） =====
-   テキストの一部だけ書体・大きさ・太さ・色を変えるため、文字位置の範囲で上書きを持つ。
+   テキストの一部だけ書体・大きさ・太さ・色・斜体を変えるため、文字位置の範囲で上書きを持つ。
    範囲は s.text 上の文字インデックス [s,e)。 */
-const RUN_KEYS = ['font','size','weight','fill'];
+const RUN_KEYS = ['font','size','weight','fill','italic'];
+/* 部分書式が何も無いときの、図形全体の書式 */
+function runBase(sh){
+  return {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh), fill:null, italic:false};
+}
 function normalizeRuns(sh){
   const len = String(sh.text||'').length;
   const runs = (sh.runs||[])
@@ -618,7 +622,7 @@ function normalizeRuns(sh){
 /* 文字ごとの実効書式。図形全体の指定にランを重ねる */
 function charAttrs(sh){
   const len = String(sh.text||'').length;
-  const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh), fill:null};
+  const base = runBase(sh);
   const out = new Array(len);
   for(let i=0;i<len;i++) out[i] = base;
   (sh.runs||[]).forEach(r=>{
@@ -631,7 +635,11 @@ function charAttrs(sh){
   });
   return out;
 }
-function attrKey(a){ return a.font+'|'+a.size+'|'+a.weight+'|'+(a.fill||''); }
+function attrKey(a){ return a.font+'|'+a.size+'|'+a.weight+'|'+(a.fill||'')+'|'+(a.italic?'i':''); }
+/* 文字ごとの書式から、測るときの書体指定を作る（斜体は字幅も変わるので必ず含める） */
+function cssFontOf(a){
+  return `${a.italic?'italic ':''}${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`;
+}
 /* 指定範囲に書式を適用する。既存のランと重なる部分は分割して整理する */
 function applyRunFormat(sh, start, end, attrs){
   const len = String(sh.text||'').length;
@@ -648,7 +656,7 @@ function applyRunFormat(sh, start, end, attrs){
     RUN_KEYS.forEach(k=>{ if(attrs[k]!=null) n[k] = attrs[k]; });
     return n;
   });
-  const base = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh), fill:null};
+  const base = runBase(sh);
   const runs = [];
   for(let i=0;i<len;i++){
     const a = want[i];
@@ -830,14 +838,14 @@ const TCY_DIGIT = /[0-9]/, TCY_LETTER = /[A-Za-z]/;
 function vertPlan(sh){
   const text = String(sh.text||'');
   const attrs = (sh.runs && sh.runs.length) ? charAttrs(sh) : null;
-  const baseA = {font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)};
+  const baseA = runBase(sh);
   const at = i => (attrs && attrs[i]) ? attrs[i] : baseA;
   const adv = new Float64Array(text.length);
   const tcy = new Int8Array(text.length);
   const maxT = tcyMax(sh);
   let key = null;
   const setFont = a => { const k = attrKey(a);
-    if(k !== key){ measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; key = k; } };
+    if(k !== key){ measureCtx.font = cssFontOf(a); key = k; } };
   let i = 0;
   while(i < text.length){
     if(TCY_DIGIT.test(text[i])){
@@ -888,7 +896,7 @@ function makeMeasurer(sh){
   const baseLS = +sh.ls || 0;
   const runs = normalizeRuns(sh);
   const vert = isVertical(sh);
-  const setFont = a => { measureCtx.font = `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`; };
+  const setFont = a => { measureCtx.font = cssFontOf(a); };
   /* 縦組みは全角1em・半角は実寸で送り、縦中横のまとまりは全体で1文字分とする */
   if(vert){
     const plan = vertPlan(sh);
@@ -904,7 +912,7 @@ function makeMeasurer(sh){
              attrs: runs.length ? charAttrs(sh) : null };
   }
   if(!runs.length){
-    setFont({font:sh.font||'sans-serif', size:sh.size||16, weight:textWeight(sh)});
+    setFont(runBase(sh));
     return { seg: g => measureCtx.measureText(g.t).width + baseLS*g.t.length,
              charW: () => 0, perChar:false, attrs:null };
   }
@@ -1012,8 +1020,7 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
   const baseLS = +spec.ls || 0;
   const rows = lines || layoutText(spec);
   t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
-  const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
-                        : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+  const fontOf = a => cssFontOf(a || runBase(spec));
   const sizeOf = a => a ? a.size : size;
   const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
   // 行の字面の長さ（行末の空白を除く）
@@ -1145,6 +1152,7 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
         tp.setAttribute('font-weight', String(pc.a.weight));
+        if(pc.a.italic) tp.setAttribute('font-style','italic');
         if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
       }
       tp.textContent = pc.t;
@@ -1192,8 +1200,7 @@ function buildTextLines(t, spec, x, y0, lines){
   /* 入力した空白をそのまま描く。これが無いと行頭・行末の空白が表示側で詰められ、
      空白を数えている折返し計算や寄せ量とズレてしまう */
   t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
-  const fontOf = a => a ? `${a.weight} ${a.size}px ${fontFamilyAttr(a.font)}`
-                        : `${textWeight(spec)} ${size}px ${fontFamilyAttr(spec.font)}`;
+  const fontOf = a => cssFontOf(a || runBase(spec));
   const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
   // 行の字面の幅（均等割付で広げる前、行末に送った空白は含まない）
   const lineW = ln => (ln.w != null ? ln.w
@@ -1302,6 +1309,7 @@ function buildTextLines(t, spec, x, y0, lines){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
         tp.setAttribute('font-size', fmtT(pc.a.size));
         tp.setAttribute('font-weight', String(pc.a.weight));
+        if(pc.a.italic) tp.setAttribute('font-style','italic');
         if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
       }
       tp.textContent = pc.t;
@@ -2681,12 +2689,15 @@ const gfLoaded = new Set();
 /* オンライン書体の指定は Family:wght@400;700 の形。任意の太さを使うときは、
    その太さも要求しないと近い太さで代用されてしまう。
    wght軸を持たない書体（Pacifico等）は太さ指定を足さない（要求すると取得に失敗するため） */
-function gfSpecWithWeight(gf, weight){
+function gfSpecWithWeight(gf, weight, italic){
   if(!weight || !/:wght@/.test(gf)) return gf;
   const [fam, axis] = gf.split(':wght@');
   const list = [...new Set(axis.split(';').concat(String(weight)))]
     .map(Number).filter(n=>n>=100&&n<=900).sort((a,b)=>a-b);
-  return fam + ':wght@' + list.join(';');
+  if(!italic) return fam + ':wght@' + list.join(';');
+  // 斜体は立体とは別の書体ファイル。ital軸で立体と斜体の両方をまとめて頼む
+  return fam + ':ital,wght@' +
+    list.map(w=>'0,'+w).concat(list.map(w=>'1,'+w)).join(';');
 }
 /* 選ばれた太さがまだ読み込まれていなければ取得する */
 function ensureWeightLoaded(key, weight){
@@ -2694,10 +2705,10 @@ function ensureWeightLoaded(key, weight){
   if(!f || !f.gf || !/:wght@/.test(f.gf)) return Promise.resolve(key);
   return ensureFontLoaded(key, weight);
 }
-function ensureFontLoaded(key, weight){
+function ensureFontLoaded(key, weight, italic){
   const f = FONTS[key];
   if(!f || !f.gf) return Promise.resolve(key);
-  const gf = gfSpecWithWeight(f.gf, weight);
+  const gf = gfSpecWithWeight(f.gf, weight, italic);
   if(gfLoaded.has(gf)) return Promise.resolve(key);
   return new Promise(resolve=>{
     gfLoaded.add(gf);
@@ -2714,19 +2725,22 @@ function ensureFontLoaded(key, weight){
     setTimeout(()=> resolve(key), 8000);
   });
 }
-/* データ中で使われているオンライン書体をまとめて読み込む（保存ファイルを開いたとき用） */
-function ensureProjectFonts(){
-  const use = new Map();
-  (state.shapes||[]).forEach(s=>{
-    if(!s.font) return;
-    if(!use.has(s.font)) use.set(s.font, new Set());
-    use.get(s.font).add(textWeight(s));
-  });
-  use.forEach((weights, k)=>{
-    if(!(FONTS[k] && FONTS[k].gf)) return;
-    weights.forEach(w=> ensureFontLoaded(k, w));
-  });
+/* その図形で使っている（書体・太さ・斜体）の組み合わせをすべて読み込む。
+   部分書式で文字ごとに変えている分も取りこぼさない */
+function ensureShapeFonts(s){
+  if(!s || !s.font) return;
+  const seen = new Set();
+  const want = a=>{
+    const k = a.font+'|'+a.weight+'|'+(a.italic?1:0);
+    if(seen.has(k)) return;
+    seen.add(k);
+    if(FONTS[a.font] && FONTS[a.font].gf) ensureFontLoaded(a.font, a.weight, a.italic);
+  };
+  want(runBase(s));
+  charAttrs(s).forEach(want);
 }
+/* データ中で使われているオンライン書体をまとめて読み込む（保存ファイルを開いたとき用） */
+function ensureProjectFonts(){ (state.shapes||[]).forEach(ensureShapeFonts); }
 
 /* ================= Webフォント（Google Fonts・フォントファイル） ================= */
 function loadGoogleFont(name){
@@ -2839,6 +2853,10 @@ function partFormatHTML(one){
       <label>太さ</label><input type="number" id="pPartWeight" placeholder="そのまま" min="100" max="900" step="100">`) +
     propRow(`<label>文字色</label><input type="color" id="pPartFill" value="#111111">
       <label class="toggle"><input type="checkbox" id="pPartFillOn">色も変える</label>`) +
+    propRow(`<label>斜体</label><span class="minibtns" id="pPartItalic"` +
+      ` title="選んだ文字を斜体にします。英字向けの書式です（和文書体は斜体の字形を持たないため、傾けただけの字になります）">` +
+      `<button data-it="1" title="選んだ文字を斜体にする">斜体</button>` +
+      `<button data-it="0" title="選んだ文字を立体（斜体でない字）に戻す">立体</button></span>`) +
     propRow(`<button id="pPartApply">選択範囲に適用</button>
       <button id="pPartClear" title="選択範囲の部分書式を外し、テキスト全体の設定に戻します">解除</button>
       <span id="pPartMsg" style="font-size:10px;color:var(--muted)"></span>`) +
@@ -2868,7 +2886,25 @@ function bindPartFormat(one){
       fill: $('pPartFillOn').checked ? $('pPartFill').value : null,
     });
   };
-  clear.onclick = ()=> run({font:null, size:null, weight:null, fill:null});
+  clear.onclick = ()=> run({font:null, size:null, weight:null, fill:null, italic:null});
+  bindItalic(one, ta, run);
+}
+/* 斜体の切り替え。押した時点で選択範囲に効き、今の字が斜体かをボタンで光らせる */
+function bindItalic(one, ta, run){
+  const wrap = $('pPartItalic'); if(!wrap) return;
+  const mark = ()=>{
+    const attrs = charAttrs(one);
+    const i = Math.min(ta.selectionStart|0, Math.max(0, attrs.length-1));
+    const on = !!(attrs[i] && attrs[i].italic);
+    wrap.querySelectorAll('[data-it]').forEach(b=> b.classList.toggle('on', b.dataset.it === (on?'1':'0')));
+  };
+  // パネルは作り直されるので、監視は本文欄そのものに付ける（documentに足すと溜まる）
+  ['keyup','click','focus','select'].forEach(ev=> ta.addEventListener(ev, mark));
+  wrap.querySelectorAll('[data-it]').forEach(b=> b.onclick = ()=>{
+    run({font:null, size:null, weight:null, fill:null, italic: b.dataset.it === '1'});
+    ensureShapeFonts(one);        // オンライン書体なら斜体の書体ファイルを取り寄せる
+  });
+  if(String(one.text||'').length) mark();
 }
 /* 選択中の書体が端末に無いときの警告と、候補フォントの診断表示 */
 function fontWarnHTML(){
@@ -3883,7 +3919,8 @@ function textToOutline(textEl){
     miterLimit = parseFloat(tcs.strokeMiterlimit) || 4;
     [...textEl.children].forEach(tp=>{
       const cs = getComputedStyle(tp);
-      const font = `${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
+      // 斜体は別の字形（字幅も違う）なので、輪郭を起こすときも同じ指定で描く
+      const font = `${cs.fontStyle} ${cs.fontWeight} ${cs.fontSize} ${cs.fontFamily}`;
       const rot = parseFloat(tp.getAttribute('rotate')) || 0;   // 縦組みで立てる字
       const str = tp.textContent;
       // 縦中横で字幅を詰めているぶんは、描くときも同じだけ横に縮める
@@ -4025,51 +4062,66 @@ function buildSVGString(view){
    スタックの後続候補で表示される（キャプション工房と同じ扱い） */
 function usedWebFonts(){
   const map = new Map();
-  const add = (key, weight, text)=>{
+  const add = (key, weight, italic, text)=>{
     const f = FONTS[key];
     // レジストリ書体はオンライン書体（gf持ち）だけが埋め込み対象
     const fam = f ? (f.gf ? (f.family || key) : null) : key;
     if(!fam || GENERIC_FAMS.includes(String(fam).toLowerCase())) return;
-    const cur = map.get(fam) || {text:'', weights:new Set()};
-    cur.text += text;
-    cur.weights.add(weight);          // 使っている太さだけを埋め込む
+    // 立体と斜体は別の書体ファイルなので、使っている面ごとに分けて数える
+    const cur = map.get(fam) || {text:'', weights:new Set(), itext:'', italics:new Set()};
+    if(italic){ cur.itext += text; cur.italics.add(weight); }
+    else      { cur.text  += text; cur.weights.add(weight); }   // 使っている太さだけを埋め込む
     map.set(fam, cur);
   };
   state.shapes.forEach(s=>{
     if(!shapeVisible(s) || !(s.type==='text' || isFrameShape(s)) || !s.text || !s.font) return;
-    // 文字ごとに別の書体・太さを指定している場合も取りこぼさない
+    // 文字ごとに別の書体・太さ・斜体を指定している場合も取りこぼさない
     const attrs = charAttrs(s), str = String(s.text);
-    for(let i=0;i<attrs.length;i++) add(attrs[i].font, attrs[i].weight, str.charAt(i));
+    for(let i=0;i<attrs.length;i++) add(attrs[i].font, attrs[i].weight, attrs[i].italic, str.charAt(i));
   });
   return map;
 }
 /* 直前の書き出しで、書き出しデータに埋め込めなかったオンライン書体。
    埋め込めないと書き出し先で別の書体に置き換わり、字面が変わってしまう */
 let embedMissing = [];
+function noteMissing(fam, ital){
+  const nm = ital ? fam + '（斜体）' : fam;
+  if(!embedMissing.includes(nm)) embedMissing.push(nm);
+}
 async function fontEmbedCSS(){
   let css = '';
   embedMissing = [];
   for(const [fam, use] of usedWebFonts()){
     const cf = (state.customFonts||[]).find(c=>c.name===fam);
     if(cf){ css += `@font-face{font-family:"${fam}";src:url(${cf.data});}`; continue; }
-    try{
-      const uniq = [...new Set(use.text)].join('');
-      const wl = [...use.weights].sort((a,b)=>a-b).join(';') || '400';
-      const url = 'https://fonts.googleapis.com/css2?family=' +
-        encodeURIComponent(fam).replace(/%20/g,'+') + ':wght@' + wl + '&display=swap' +
-        '&text=' + encodeURIComponent(uniq);
-      let txt = await (await fetch(url)).text();
-      for(const u of new Set([...txt.matchAll(/url\((https:[^)]+)\)/g)].map(m=>m[1]))){
-        const bytes = new Uint8Array(await (await fetch(u)).arrayBuffer());
-        let bin = '';
-        for(let i=0; i<bytes.length; i+=0x8000)
-          bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
-        txt = txt.split(u).join('data:font/woff2;base64,' + btoa(bin));
-      }
-      // 書体ファイルを取り込めていなければ（外部URLが残っていれば）埋め込み失敗とみなす
-      if(/url\(https?:/.test(txt) || !/@font-face/.test(txt)) embedMissing.push(fam);
-      else css += txt;
-    }catch(err){ embedMissing.push(fam); }   // オフライン時は埋め込みなしで続行
+    /* 立体と斜体は別の書体ファイル。まとめて頼むと斜体を持たない書体で全部が失敗するので、
+       面ごとに分けて取り寄せ、取れたものだけ埋め込む */
+    const faces = [];
+    if(use.weights.size) faces.push({ital:0, ws:[...use.weights], text:use.text});
+    if(use.italics.size) faces.push({ital:1, ws:[...use.italics], text:use.itext});
+    for(const face of faces){
+      try{
+        const uniq = [...new Set(face.text)].join('');
+        const ws = face.ws.sort((a,b)=>a-b);
+        const axis = face.ital
+          ? 'ital,wght@' + ws.map(w=>'1,'+w).join(';')
+          : 'wght@' + (ws.join(';') || '400');
+        const url = 'https://fonts.googleapis.com/css2?family=' +
+          encodeURIComponent(fam).replace(/%20/g,'+') + ':' + axis + '&display=swap' +
+          '&text=' + encodeURIComponent(uniq);
+        let txt = await (await fetch(url)).text();
+        for(const u of new Set([...txt.matchAll(/url\((https:[^)]+)\)/g)].map(m=>m[1]))){
+          const bytes = new Uint8Array(await (await fetch(u)).arrayBuffer());
+          let bin = '';
+          for(let i=0; i<bytes.length; i+=0x8000)
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i+0x8000));
+          txt = txt.split(u).join('data:font/woff2;base64,' + btoa(bin));
+        }
+        // 書体ファイルを取り込めていなければ（外部URLが残っていれば）埋め込み失敗とみなす
+        if(/url\(https?:/.test(txt) || !/@font-face/.test(txt)) noteMissing(fam, face.ital);
+        else css += txt;
+      }catch(err){ noteMissing(fam, face.ital); }   // オフライン時は埋め込みなしで続行
+    }
   }
   return css;
 }
