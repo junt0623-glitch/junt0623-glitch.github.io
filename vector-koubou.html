@@ -784,6 +784,8 @@ function fattenJoin(s){ return (s && s.fattenJoin === 'miter') ? 'miter' : 'roun
    文字の変形の外側で決める（光の向きは紙に対して一定、という見え方にそろえる） */
 const SHADOW_DEF = {dist:5, angle:45, blur:5, scale:1, color:'#000000', alpha:0.45};
 const SHADOW_SCALE_MAX = 2;                  // 影の大きさの上限（文字の200%）
+/* 影の写しを組むときの倍率。本物を組むときは常に1 */
+function shadowK(spec){ return clamp(+((spec && spec.shadowK) || 1) || 1, 0.5, SHADOW_SCALE_MAX); }
 function textShadow(s){
   const d = s && s.shadow;
   if(!d) return null;
@@ -797,23 +799,21 @@ function textShadow(s){
 /* 影を落とせるのは文字だけ（枠の中の文字は文字にだけ掛け、枠そのものには掛けない） */
 function hasShadow(s){ return !!(s && (s.type==='text' || (isFrameShape(s) && s.text)) && textShadow(s)); }
 function shadowId(s){ return 'shadow'+s.id; }
+/* その図形で使っている一番大きい字の大きさ（部分書式で大きくした字も数える） */
+function maxCharSize(s){
+  let mx = s.size || 16;
+  (s.runs||[]).forEach(r=>{ if(r.size > mx) mx = r.size; });
+  return mx;
+}
 function shadowOffset(d){
   const a = deg2rad(d.angle);
   return {dx: d.dist*Math.cos(a), dy: d.dist*Math.sin(a)};
 }
-/* 影の写しに掛ける変形。文字の中心を動かさずに拡げてから、指定の向きへずらす */
+/* 影の写しに掛ける変形は「ずらし」だけ。大きさは1文字ずつその場で拡げて出す */
 function shadowTransform(s){
   const d = textShadow(s); if(!d) return '';
   const {dx, dy} = shadowOffset(d);
-  const k = d.scale;
-  const out = [];
-  if(dx || dy) out.push(`translate(${fmtT(dx)} ${fmtT(dy)})`);
-  if(k !== 1){
-    const b = renderBBox(s);
-    const cx = b.x + b.w/2, cy = b.y + b.h/2;
-    out.push(`translate(${fmtT(cx)} ${fmtT(cy)}) scale(${fmtT(k)}) translate(${fmtT(-cx)} ${fmtT(-cy)})`);
-  }
-  return out.join(' ');
+  return (dx || dy) ? `translate(${fmtT(dx)} ${fmtT(dy)})` : '';
 }
 /* 影が届く範囲。ずらして拡げた写しと元の文字の両方を含め、ぼかしのぶんだけ広げる */
 function shadowDefString(s){
@@ -821,28 +821,42 @@ function shadowDefString(s){
   const {dx, dy} = shadowOffset(d);
   const sd = d.blur/2;                       // ぼかし幅の半分を標準偏差に（CSSの影と同じ目安）
   const b = renderBBox(s), k = d.scale;
-  const cx = b.x + b.w/2, cy = b.y + b.h/2;
-  const g = {x: cx + (b.x-cx)*k + dx, y: cy + (b.y-cy)*k + dy, w: b.w*k, h: b.h*k};
+  // 1文字ずつその場で拡げるので、影は文字の外形から「字の大きさ×(k-1)/2」ぶん外へ出る
+  const em = maxCharSize(s), out = em*1.2*(k-1)/2;
+  const g = {x: b.x - out + dx, y: b.y - out + dy, w: b.w + out*2, h: b.h + out*2};
   const x1 = Math.min(b.x, g.x), y1 = Math.min(b.y, g.y);
   const x2 = Math.max(b.x+b.w, g.x+g.w), y2 = Math.max(b.y+b.h, g.y+g.h);
   // 字形のインクは送り幅より少し外へ出るので、その分も見込む
-  const pad = sd*3 + (s.size||16)*0.6*k + (+s.strokeWidth||0)*k + 4;
+  const pad = sd*3 + em*0.6*k + (+s.strokeWidth||0)*k + 4;
   return `<filter id="${shadowId(s)}" filterUnits="userSpaceOnUse" ` +
     `x="${fmt(x1-pad)}" y="${fmt(y1-pad)}" width="${fmt(x2-x1+pad*2)}" height="${fmt(y2-y1+pad*2)}">` +
     `<feGaussianBlur in="SourceAlpha" stdDeviation="${fmtT(sd)}" result="shb"/>` +
     `<feFlood flood-color="${esc(d.color)}" flood-opacity="${fmtT(d.alpha)}" result="shc"/>` +
     `<feComposite in="shc" in2="shb" operator="in"/></filter>`;
 }
-/* 影つきの文字を組み立てる。文字の写しを影として敷き、その上に本物を置く。
-   ぼかしは紙の上の寸法どおりに効かせたいので、写しを拡げる変形は filter の内側に置く */
-function wrapShadow(el, s){
-  const NS = 'http://www.w3.org/2000/svg';
-  const ghost = el.cloneNode(true);
+/* 影に敷く「文字の写し」。大きさを変えないときは本物をそのまま写す。
+   変えるときは、送りはそのままで字だけ拡げた組み直しを作る（各文字の真裏に影が残る） */
+function shadowGhost(el, s){
+  const k = textShadow(s).scale;
+  let ghost;
+  if(k === 1) ghost = el.cloneNode(true);
+  else if(isFrameShape(s)) ghost = frameTextEl(s, k);
+  else{
+    ghost = el.cloneNode(false);                       // 塗り・線・太らせ・変形は本物と同じ
+    ghost.setAttribute('font-size', fmtT((s.size||16)*k));
+    buildTextLines(ghost, Object.assign({}, textLayoutSpec(s), {shadowK:k}), s.x, s.y);
+  }
   // 写しは印を持たない（選択や当たり判定は本物だけが受け持つ）
   ghost.removeAttribute('id'); ghost.removeAttribute('data-id');
-  ghost.querySelectorAll('*').forEach(k=>{ k.removeAttribute('id'); k.removeAttribute('data-id'); });
+  ghost.querySelectorAll('*').forEach(z=>{ z.removeAttribute('id'); z.removeAttribute('data-id'); });
+  return ghost;
+}
+/* 影つきの文字を組み立てる。文字の写しを影として敷き、その上に本物を置く。
+   ぼかしは紙の上の寸法どおりに効かせたいので、写しをずらす変形は filter の内側に置く */
+function wrapShadow(el, s){
+  const NS = 'http://www.w3.org/2000/svg';
+  const ghost = shadowGhost(el, s);
   const move = document.createElementNS(NS,'g');
-  move.dataset.shadow = s.id;                 // 組み上がった外形で置き直すための目印
   const tf = shadowTransform(s);
   if(tf) move.setAttribute('transform', tf);
   move.appendChild(ghost);
@@ -854,17 +868,6 @@ function wrapShadow(el, s){
   g.appendChild(shade);
   g.appendChild(el);
   return g;
-}
-/* 影の位置と大きさは組み上がった文字の外形から決まる。図形を置いたあとにあてはめ直す
-   （本文を直した直後でも、前の外形のままずれたりしない） */
-function applyShadowGeometry(){
-  state.shapes.forEach(s=>{
-    if(!hasShadow(s)) return;
-    const g = shapesLayer.querySelector(`[data-shadow="${s.id}"]`);
-    if(!g) return;
-    const tf = shadowTransform(s);
-    if(tf) g.setAttribute('transform', tf); else g.removeAttribute('transform');
-  });
 }
 function applyFatten(el, size, fatten, paint, baseStroke, baseWidth, join){
   if(!(fatten > 0)) return;
@@ -1131,6 +1134,11 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
     return cs;
   };
   const plan = mz.plan || vertPlan(spec);
+  /* 影の写しだけ、1文字ずつその場で拡げる。ます目（送り）はそのままで字だけ大きくするので、
+     どの文字の影もその文字の真裏に残る */
+  const K = shadowK(spec);
+  const bigA = a => K===1 ? a : Object.assign({}, a || runBase(spec), {size: sizeOf(a)*K});
+  const bigTop = (yTop, em) => K===1 ? yTop : yTop - em*(K-1)/2;   // ます目の中心を動かさない
   // 1字ずつの送り（全角は1em、半角は実寸、縦中横のまとまりは全体で1文字分）
   const charYs = (cs, y0, ls)=>{
     const ys = new Array(cs.length+1);
@@ -1219,19 +1227,21 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
       if(pc.cls === 'tcy'){
         /* 縦中横。1文字分のます目に横一列で収める。
            はみ出すときは字幅ごと詰めて、行の幅からはみ出さないようにする */
-        const em = sizeOf(pc.a), font = fontOf(pc.a);
+        const em0 = sizeOf(pc.a), bg = bigA(pc.a);
+        const em = sizeOf(bg), font = fontOf(bg);
         measureCtx.font = font;
         const w = measureCtx.measureText(pc.t).width;
         tp.setAttribute('x', fmtT(cx - Math.min(w, em)/2));
-        tp.setAttribute('y', fmtT(ys[pc.at] + em*baseRatio(font, em)));
+        tp.setAttribute('y', fmtT(bigTop(ys[pc.at], em0) + em*baseRatio(font, em)));
         if(w > em + 0.01){
           tp.setAttribute('textLength', fmtT(em));
           tp.setAttribute('lengthAdjust','spacingAndGlyphs');
         }
       }else{
         const xs = [], yy = [];
+        const bg = bigA(pc.a), em0 = sizeOf(pc.a);
         for(let k=0;k<pc.t.length;k++){
-          const p = place(pc.t.charAt(k), pc.a, cx, ys[pc.at+k]);
+          const p = place(pc.t.charAt(k), bg, cx, bigTop(ys[pc.at+k], em0));
           xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
         }
         tp.setAttribute('x', xs.join(' '));
@@ -1240,11 +1250,11 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
       }
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
-        tp.setAttribute('font-size', fmtT(pc.a.size));
+        tp.setAttribute('font-size', fmtT(pc.a.size*K));
         tp.setAttribute('font-weight', String(pc.a.weight));
         if(pc.a.italic) tp.setAttribute('font-style','italic');
         if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
-      }
+      }else if(K !== 1) tp.setAttribute('font-size', fmtT(size*K));
       tp.textContent = pc.t;
       t.appendChild(tp);
     });
@@ -1261,16 +1271,17 @@ function buildVerticalLines(t, spec, xRight, yTop, lines){
         const total = n*rubySize + (n-1)*rls;
         let y = ys[a] + (span - total)/2;
         const xs = [], yy = [];
+        const ra = {font:(a0?a0.font:spec.font), size:rubySize*K,
+                    weight:(a0?a0.weight:textWeight(spec))};
         for(const ch of tg.r){
-          const p = place(ch, {font:(a0?a0.font:spec.font), size:rubySize,
-                               weight:(a0?a0.weight:textWeight(spec))}, rcx, y);
+          const p = place(ch, ra, rcx, bigTop(y, rubySize));
           xs.push(fmtT(p.x)); yy.push(fmtT(p.y));
           y += rubySize + rls;
         }
         const rt = document.createElementNS(NS,'tspan');
         rt.setAttribute('x', xs.join(' '));
         rt.setAttribute('y', yy.join(' '));
-        rt.setAttribute('font-size', fmtT(rubySize));
+        rt.setAttribute('font-size', fmtT(rubySize*K));
         rt.setAttribute('data-ruby','1');
         if([...tg.r].every(c=> vertClass(c)==='rot')) rt.setAttribute('rotate','90');
         rt.textContent = tg.r;
@@ -1292,6 +1303,16 @@ function buildTextLines(t, spec, x, y0, lines){
   t.setAttributeNS('http://www.w3.org/XML/1998/namespace','xml:space','preserve');
   const fontOf = a => cssFontOf(a || runBase(spec));
   const keyOf = i => (attrs && attrs[i]) ? attrKey(attrs[i]) : '';
+  /* 影の写しだけ、1文字ずつその場で拡げる。送りはそのままで字だけ大きくするので、
+     どの文字の影もその文字の真裏に残る。字の中心を動かさないぶん、書き出す位置は
+     1文字ずつ明記する（写しは影なので、字間の見え方より位置の一致を優先する） */
+  const K = shadowK(spec);
+  // 字を拡げたとき、ます目の上下の中心を動かさないための文字送り方向の直し
+  const bigDy = (a, em)=>{
+    if(K === 1) return 0;
+    const m = fontVMetrics(cssFontOf(Object.assign({}, a || runBase(spec), {size: em})), em);
+    return (m.asc - m.desc)/2 * (K-1);
+  };
   // 行の字面の幅（均等割付で広げる前、行末に送った空白は含まない）
   const lineW = ln => (ln.w != null ? ln.w
                       : ln.segs ? Math.max(0, ln.segs.reduce((a,g)=> a + mz.seg(g), 0) - baseLS) : 0);
@@ -1387,17 +1408,30 @@ function buildTextLines(t, spec, x, y0, lines){
          固定されるが、字と字の間隔は表示側の書体に任せる。
          1文字ずつ位置を固定すると、書き出し先で書体が入れ替わったとき
          字間に隙間や重なりが出て、入れていない空白のように見えてしまう */
-      tp.setAttribute('x', fmtT(xs[pc.at]));
-      tp.setAttribute('y', fmtT(y));
-      // 先頭の字の左端から最後の字の送り終わりまで（最後の字の後ろに付く字間は含まない）
-      const adv = xs[pc.at + pc.t.length] - xs[pc.at] - ls;
-      if(pc.t.length > 1 && adv > 0){
-        tp.setAttribute('textLength', fmtT(adv));
-        tp.setAttribute('lengthAdjust', 'spacing');   // 字形は変えず字間だけで幅を合わせる
+      const em = pc.a ? pc.a.size : size;
+      if(K !== 1){
+        // 1文字ずつ、その字の送り幅の中心を動かさないように置き直す
+        const each = [];
+        for(let j=0;j<pc.t.length;j++){
+          const w = Math.max(0, xs[pc.at+j+1] - xs[pc.at+j] - ls);
+          each.push(fmtT(xs[pc.at+j] - w*(K-1)/2));
+        }
+        tp.setAttribute('x', each.join(' '));
+        tp.setAttribute('y', fmtT(y + bigDy(pc.a, em)));
+      }else{
+        tp.setAttribute('x', fmtT(xs[pc.at]));
+        tp.setAttribute('y', fmtT(y));
+        // 先頭の字の左端から最後の字の送り終わりまで（最後の字の後ろに付く字間は含まない）
+        const adv = xs[pc.at + pc.t.length] - xs[pc.at] - ls;
+        if(pc.t.length > 1 && adv > 0){
+          tp.setAttribute('textLength', fmtT(adv));
+          tp.setAttribute('lengthAdjust', 'spacing');   // 字形は変えず字間だけで幅を合わせる
+        }
       }
+      if(K !== 1 && !pc.a) tp.setAttribute('font-size', fmtT(em*K));
       if(pc.a){
         tp.setAttribute('font-family', fontFamilyAttr(pc.a.font));
-        tp.setAttribute('font-size', fmtT(pc.a.size));
+        tp.setAttribute('font-size', fmtT(pc.a.size*K));
         tp.setAttribute('font-weight', String(pc.a.weight));
         if(pc.a.italic) tp.setAttribute('font-style','italic');
         if(pc.a.fill){ tp.setAttribute('fill', pc.a.fill); fattenStroke(tp, pc.a.fill); }
@@ -1409,14 +1443,15 @@ function buildTextLines(t, spec, x, y0, lines){
       const rubySize = (attrs && cs[rb.start] && attrs[cs[rb.start].i])
                         ? attrs[cs[rb.start].i].size : size;
       // 太らせると基底文字は上へ、ルビは下へ膨らんで隙間が埋まるので、その分ルビを上げる
-      const rubyY = y - rubySize*0.85 - (+spec.rubyDy||0) - fattenGap(spec);
+      const rubyY = y - rubySize*0.85 - (+spec.rubyDy||0) - fattenGap(spec)
+                    + bigDy(null, rubySize*0.5);
       rubyTargets(rb).forEach(tg=>{
         // 基底文字の実寸の中央に置く（末尾に付く字間ぶんは含めない）
         const a = Math.min(tg.from, cs.length), b = Math.min(tg.to, cs.length);
         const rt = document.createElementNS(NS,'tspan');
         rt.setAttribute('x', fmtT((xs[a] + xs[b] - ls)/2));
         rt.setAttribute('y', fmtT(rubyY));
-        rt.setAttribute('font-size', fmtT(rubySize*0.5));
+        rt.setAttribute('font-size', fmtT(rubySize*0.5*K));
         rt.setAttribute('text-anchor','middle');
         if(spec.rubyLS) rt.setAttribute('letter-spacing', spec.rubyLS);
         rt.textContent = tg.r;
@@ -1549,7 +1584,7 @@ function autoFitFrame(s){
   fitFrameToTextBox(s, needW, needH);
   return true;
 }
-function frameTextEl(s){
+function frameTextEl(s, k){
   const NS = 'http://www.w3.org/2000/svg';
   const box = frameTextBox(s);
   const size = s.size || 16;
@@ -1557,6 +1592,7 @@ function frameTextEl(s){
   const ik = inlineScale(s), bk = blockScale(s);
   // 折返しの長さは伸縮前に直す。厚みや寄せは伸縮後の寸法で数える
   const fake = frameTextSpec(s, frameLineLen(s, box)/ik);
+  if(k && k !== 1) fake.shadowK = k;          // 影の写しは字だけ拡げて組む
   const t = document.createElementNS(NS,'text');
   const lines = layoutText(fake);
   const rubyPad = frameRubyPad(s, lines);
@@ -1568,7 +1604,7 @@ function frameTextEl(s){
   const x = vert ? box.x + box.w - vOff - rubyPad*bk : box.x;
   const y = vert ? box.y : box.y + vOff + (size*0.9 + rubyPad)*bk;
   t.setAttribute('x',fmt(x)); t.setAttribute('y',fmt(y));
-  t.setAttribute('font-size', size);
+  t.setAttribute('font-size', (k && k !== 1) ? fmtT(size*k) : size);
   t.setAttribute('font-family', fontFamilyAttr(fake.font));
   t.setAttribute('font-weight', String(textWeight(fake)));
   t.setAttribute('fill', s.textFill || '#111111');
@@ -1870,8 +1906,7 @@ function render(skipProps){
   normalizeOrder();
   shapesLayer.innerHTML = '';
   state.shapes.forEach(s=>{ if(shapeVisible(s)) shapesLayer.appendChild(shapeEl(s,true)); });
-  // 影は組み上がった文字の外形を基準にするので、図形を置いたあとで位置と範囲を決める
-  applyShadowGeometry();
+  // 影の届く範囲は組み上がった文字の外形から決めるので、図形を置いたあとで作る
   updateGradientDefs();
 
   renderHandles();
@@ -3324,7 +3359,7 @@ function renderProps(){
         rangeIn(id+'Angle','影の向き',d.angle,0,359,1,'°','影を落とす向き。0°で右、90°で下、180°で左') +
         rangeIn(id+'Blur','影のぼかし',d.blur,0,60,0.5,'px','影のふちのぼかし幅。0でくっきりした影になります') +
         rangeIn(id+'Scale','影の大きさ',Math.round(d.scale*100),50,SHADOW_SCALE_MAX*100,1,'%',
-          '文字に対する影の大きさ。100%で文字と同じ、200%で文字の倍の大きさになります（中心はそのまま）') +
+          '文字に対する影の大きさ。100%で文字と同じ、200%で文字の倍。1文字ずつその場で拡げるので、どの文字の影もその文字の真裏に残ります') +
         rangeIn(id+'Alpha','影の濃さ',Math.round(d.alpha*100),0,100,1,'%','影の濃さ。0で見えなくなります') +
         propRow(`<label>影の色</label><input type="color" id="${id}Color" value="${esc(d.color)}">`);
     };
