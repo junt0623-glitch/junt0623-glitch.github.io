@@ -786,7 +786,7 @@ const SHADOW_DEF = {dist:5, angle:45, blur:5, scale:1, color:'#000000', alpha:0.
 const SHADOW_SCALE_MAX = 2;                  // 影の大きさの上限（文字の200%）
 /* 影の写しを組むときの倍率。本物を組むときは常に1 */
 function shadowK(spec){ return clamp(+((spec && spec.shadowK) || 1) || 1, 0.5, SHADOW_SCALE_MAX); }
-function textShadow(s){
+function shapeShadow(s){
   const d = s && s.shadow;
   if(!d) return null;
   return {dist:  clamp(+d.dist || 0, 0, 200),
@@ -796,8 +796,12 @@ function textShadow(s){
           color: d.color || '#000000',
           alpha: clamp(d.alpha == null ? 1 : +d.alpha, 0, 1)};
 }
-/* 影を落とせるのは文字だけ（枠の中の文字は文字にだけ掛け、枠そのものには掛けない） */
-function hasShadow(s){ return !!(s && (s.type==='text' || (isFrameShape(s) && s.text)) && textShadow(s)); }
+/* 影を落とせるのは文字と画像（枠の中の文字は文字にだけ掛け、枠そのものには掛けない）。
+   画像は絵の不透明なところだけが影になるので、PNGの切り抜きは外形に沿った影になる */
+function canShadow(s){
+  return !!s && (s.type==='text' || s.type==='image' || (isFrameShape(s) && s.text));
+}
+function hasShadow(s){ return !!(canShadow(s) && shapeShadow(s)); }
 function shadowId(s){ return 'shadow'+s.id; }
 /* その図形で使っている一番大きい字の大きさ（部分書式で大きくした字も数える） */
 function maxCharSize(s){
@@ -809,25 +813,35 @@ function shadowOffset(d){
   const a = deg2rad(d.angle);
   return {dx: d.dist*Math.cos(a), dy: d.dist*Math.sin(a)};
 }
-/* 影の写しに掛ける変形は「ずらし」だけ。大きさは1文字ずつその場で拡げて出す */
+/* 影の写しに掛ける変形。ずらしは共通で、大きさは文字なら1文字ずつその場で、
+   画像なら絵そのものを中心から拡げる（どちらも物の真裏に影が残る） */
 function shadowTransform(s){
-  const d = textShadow(s); if(!d) return '';
+  const d = shapeShadow(s); if(!d) return '';
   const {dx, dy} = shadowOffset(d);
-  return (dx || dy) ? `translate(${fmtT(dx)} ${fmtT(dy)})` : '';
+  const out = [];
+  if(dx || dy) out.push(`translate(${fmtT(dx)} ${fmtT(dy)})`);
+  if(d.scale !== 1 && s.type === 'image'){
+    const cx = s.x + s.w/2, cy = s.y + s.h/2;
+    out.push(`translate(${fmtT(cx)} ${fmtT(cy)}) scale(${fmtT(d.scale)}) translate(${fmtT(-cx)} ${fmtT(-cy)})`);
+  }
+  return out.join(' ');
 }
 /* 影が届く範囲。ずらして拡げた写しと元の文字の両方を含め、ぼかしのぶんだけ広げる */
 function shadowDefString(s){
-  const d = textShadow(s); if(!d) return '';
+  const d = shapeShadow(s); if(!d) return '';
   const {dx, dy} = shadowOffset(d);
   const sd = d.blur/2;                       // ぼかし幅の半分を標準偏差に（CSSの影と同じ目安）
-  const b = renderBBox(s), k = d.scale;
-  // 1文字ずつその場で拡げるので、影は文字の外形から「字の大きさ×(k-1)/2」ぶん外へ出る
-  const em = maxCharSize(s), out = em*1.2*(k-1)/2;
-  const g = {x: b.x - out + dx, y: b.y - out + dy, w: b.w + out*2, h: b.h + out*2};
+  const b = renderBBox(s), k = d.scale, img = s.type === 'image';
+  /* 影が外形からはみ出す量。画像は絵そのものを拡げるので外形の半分ぶん、
+     文字は1文字ずつその場で拡げるので「字の大きさ×(k-1)/2」ぶん */
+  const em = maxCharSize(s);
+  const ox = img ? b.w*(k-1)/2 : em*1.2*(k-1)/2;
+  const oy = img ? b.h*(k-1)/2 : em*1.2*(k-1)/2;
+  const g = {x: b.x - ox + dx, y: b.y - oy + dy, w: b.w + ox*2, h: b.h + oy*2};
   const x1 = Math.min(b.x, g.x), y1 = Math.min(b.y, g.y);
   const x2 = Math.max(b.x+b.w, g.x+g.w), y2 = Math.max(b.y+b.h, g.y+g.h);
-  // 字形のインクは送り幅より少し外へ出るので、その分も見込む
-  const pad = sd*3 + em*0.6*k + (+s.strokeWidth||0)*k + 4;
+  // 字形のインクは送り幅より少し外へ出るので、その分も見込む（画像は外形がそのまま端）
+  const pad = sd*3 + (img ? 2 : em*0.6*k + (+s.strokeWidth||0)*k) + 4;
   return `<filter id="${shadowId(s)}" filterUnits="userSpaceOnUse" ` +
     `x="${fmt(x1-pad)}" y="${fmt(y1-pad)}" width="${fmt(x2-x1+pad*2)}" height="${fmt(y2-y1+pad*2)}">` +
     `<feGaussianBlur in="SourceAlpha" stdDeviation="${fmtT(sd)}" result="shb"/>` +
@@ -837,7 +851,15 @@ function shadowDefString(s){
 /* 影に敷く「文字の写し」。大きさを変えないときは本物をそのまま写す。
    変えるときは、送りはそのままで字だけ拡げた組み直しを作る（各文字の真裏に影が残る） */
 function shadowGhost(el, s){
-  const k = textShadow(s).scale;
+  const k = shapeShadow(s).scale;
+  /* 画像は同じ絵をもう一度参照するだけにする。写しを作ると、埋め込んだ画像が
+     書き出しデータの中で二重になってしまう */
+  if(s.type === 'image'){
+    const u = document.createElementNS('http://www.w3.org/2000/svg','use');
+    u.setAttribute('href', '#el-'+s.id);
+    u.setAttributeNS('http://www.w3.org/1999/xlink','xlink:href', '#el-'+s.id);
+    return u;
+  }
   let ghost;
   if(k === 1) ghost = el.cloneNode(true);
   else if(isFrameShape(s)) ghost = frameTextEl(s, k);
@@ -1716,7 +1738,11 @@ function shapeEl(s, live){
   }
   /* テキスト図形は図形そのものが文字。影は回転・伸縮の外側から掛けるので、
      id を付け替えないよう、印（id・data-id）は中の要素に残したまま外側で包む */
-  if(s.type==='text' && hasShadow(s)) result = wrapShadow(result, s);
+  if((s.type==='text' || s.type==='image') && hasShadow(s)){
+    // 画像の影は本体を参照して描くので、書き出しのときも印を残す
+    if(s.type==='image') result.setAttribute('id','el-'+s.id);
+    result = wrapShadow(result, s);
+  }
   return result;
 }
 
@@ -2943,6 +2969,26 @@ function fontSelectHTML(id, one){
   }
   return html + `</select>`;
 }
+/* ドロップシャドウ。入りにしたときだけ細かい調整欄を出す。
+   画像では絵の不透明なところだけが影になるので、切り抜きPNGは外形に沿った影になる */
+function shadowRowsHTML(id, rep, label){
+  const d = shapeShadow(rep), img = rep && rep.type === 'image';
+  const what = img ? '絵' : '文字';
+  let h = propRow(`<label class="toggle" title="${img
+      ? '絵の後ろに影を落とします。透かし（PNGの切り抜き）は外形に沿った影になります。影の向きと大きさは、絵を回しても変わりません'
+      : '文字の後ろに影を落とします。影の向きと大きさは、文字を回しても伸縮しても変わりません'}">` +
+    `<input type="checkbox" id="${id}On" ${d?'checked':''}>${label}</label>`);
+  if(!d) return h;
+  return h +
+    rangeIn(id+'Dist','影の距離',d.dist,0,100,0.5,'px',`${what}から影をずらす量。0で真後ろに重なります`) +
+    rangeIn(id+'Angle','影の向き',d.angle,0,359,1,'°','影を落とす向き。0°で右、90°で下、180°で左') +
+    rangeIn(id+'Blur','影のぼかし',d.blur,0,60,0.5,'px','影のふちのぼかし幅。0でくっきりした影になります') +
+    rangeIn(id+'Scale','影の大きさ',Math.round(d.scale*100),50,SHADOW_SCALE_MAX*100,1,'%',
+      img ? '絵に対する影の大きさ。100%で絵と同じ、200%で倍。絵の中心を動かさずに拡げます'
+          : '文字に対する影の大きさ。100%で文字と同じ、200%で文字の倍。1文字ずつその場で拡げるので、どの文字の影もその文字の真裏に残ります') +
+    rangeIn(id+'Alpha','影の濃さ',Math.round(d.alpha*100),0,100,1,'%','影の濃さ。0で見えなくなります') +
+    propRow(`<label>影の色</label><input type="color" id="${id}Color" value="${esc(d.color)}">`);
+}
 /* 選んだ段落だけの揃え。揃えは行の並べ方なので、文字ではなく段落の単位で効く */
 function paraAlignHTML(id, rep){
   return propRow(`<label>段落の揃え</label><span class="minibtns" id="${id}"` +
@@ -3310,6 +3356,7 @@ function renderProps(){
       rangeIn('pImgScale','縮尺',pct,5,400,1,'%','原寸に対する倍率。縦横比を保ったまま拡大・縮小します') +
       propRow(`<button id="pImgReset" title="取り込んだときの画素数と同じ大きさに戻します">原寸に戻す</button>
         <span style="font-size:10px;color:var(--muted)">${one.natW?`原寸 ${one.natW}×${one.natH}px`:'原寸不明'}</span>`) +
+      shadowRowsHTML('pImgShadow', one, '絵の外形に沿った影を付ける') +
       `</div>`;
   }
   if(!isLine && !isImage){
@@ -3348,21 +3395,6 @@ function renderProps(){
       propRow(`<label>太らせの角</label><select id="${id}Join" style="flex:1" title="太らせたときの角の作り。隅丸は角が丸くなり、隅角は元の字の角ばりを残します（太らせが0%のときは効きません）">` +
         FATTEN_JOINS.map(([v,l])=>`<option value="${v}" ${fattenJoin(rep)===v?'selected':''}>${l}</option>`).join('') +
         `</select>`);
-    /* ドロップシャドウ。入りにしたときだけ細かい調整欄を出す */
-    const shadowRows = (id, rep, label)=>{
-      const d = textShadow(rep);
-      let h = propRow(`<label class="toggle" title="文字の後ろに影を落とします。影の向きと大きさは、文字を回しても伸縮しても変わりません">` +
-        `<input type="checkbox" id="${id}On" ${d?'checked':''}>${label}</label>`);
-      if(!d) return h;
-      return h +
-        rangeIn(id+'Dist','影の距離',d.dist,0,100,0.5,'px','文字から影をずらす量。0で真後ろに重なります') +
-        rangeIn(id+'Angle','影の向き',d.angle,0,359,1,'°','影を落とす向き。0°で右、90°で下、180°で左') +
-        rangeIn(id+'Blur','影のぼかし',d.blur,0,60,0.5,'px','影のふちのぼかし幅。0でくっきりした影になります') +
-        rangeIn(id+'Scale','影の大きさ',Math.round(d.scale*100),50,SHADOW_SCALE_MAX*100,1,'%',
-          '文字に対する影の大きさ。100%で文字と同じ、200%で文字の倍。1文字ずつその場で拡げるので、どの文字の影もその文字の真裏に残ります') +
-        rangeIn(id+'Alpha','影の濃さ',Math.round(d.alpha*100),0,100,1,'%','影の濃さ。0で見えなくなります') +
-        propRow(`<label>影の色</label><input type="color" id="${id}Color" value="${esc(d.color)}">`);
-    };
     const dirRow = (id, rep)=> propRow(`<label>組み方向</label><select id="${id}" style="flex:1" title="縦書きにすると、行は上から下へ流れ、行は右から左へ進みます">` +
       `<option value="h" ${isVertical(rep)?'':'selected'}>横書き</option>` +
       `<option value="v" ${isVertical(rep)?'selected':''}>縦書き</option></select>`) +
@@ -3392,7 +3424,7 @@ function renderProps(){
           ``) +
         rangeIn('pFrameWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         fattenRow('pFrameFatten', rep) +
-        shadowRows('pFrameShadow', rep, '枠内文字に影を付ける') +
+        shadowRowsHTML('pFrameShadow', rep, '枠内文字に影を付ける') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3412,7 +3444,7 @@ function renderProps(){
           ``) +
         rangeIn('pWeight','太さ',textWeight(rep),100,900,100,'','文字の太さ（100=極細〜900=極太）。書体が持たない太さは近い太さで表示されます') +
         fattenRow('pFatten', rep) +
-        shadowRows('pShadow', rep, '影を付ける') +
+        shadowRowsHTML('pShadow', rep, '影を付ける') +
         propRow(`<input id="pFontName" list="gfList" placeholder="Google Fonts名を入力" style="flex:1">
           <button id="pFontLoad" title="Google Fontsから読み込み（要ネット接続）">読込</button>
           <button id="pFontFile" title="フォントファイル(.ttf/.otf/.woff)を読み込み">ﾌｧｲﾙ</button>`) +
@@ -3566,7 +3598,7 @@ function renderProps(){
     const setShadow = (key, v)=> each(sh=>{
       sh.shadow = Object.assign({}, SHADOW_DEF, sh.shadow||{}, {[key]: v});
     });
-    ['pShadow','pFrameShadow'].forEach(id=>{
+    ['pShadow','pFrameShadow','pImgShadow'].forEach(id=>{
       const on = $(id+'On');
       if(on) on.onchange = ()=>{
         startEdit();
